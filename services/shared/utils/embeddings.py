@@ -20,10 +20,10 @@ class SimpleEmbeddings:
         logger.info("Загружаем локальную модель эмбеддингов...")
         
         try:
-            # Используем лучшую русскую модель от ai-forever
-            self.model = SentenceTransformer('ai-forever/sbert_large_nlu_ru')
-            self.model_name = "sbert_large_nlu_ru"
-            self.embedding_dim = 1024  # Размерность эмбеддингов
+            # Используем более совместимую русскую модель
+            self.model = SentenceTransformer('cointegrated/rubert-tiny2')
+            self.model_name = "rubert-tiny2"
+            self.embedding_dim = 312  # Размерность эмбеддингов для этой модели
             
             logger.info(f"Модель {self.model_name} успешно загружена!")
             

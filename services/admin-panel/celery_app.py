@@ -5,6 +5,10 @@ Celery приложение для обработки документов
 import os
 from celery import Celery
 
+# Загружаем переменные окружения
+from dotenv import load_dotenv
+load_dotenv('.env.local')
+
 # Настройки Redis
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
