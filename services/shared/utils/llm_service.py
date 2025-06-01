@@ -7,8 +7,15 @@ import os
 import logging
 import re
 from typing import List, Dict, Any, Optional
-from .llm_client import SimpleLLMClient
-from .prompts import PromptManager, PromptTemplates
+
+# Исправляем импорты на абсолютные
+try:
+    from services.shared.utils.llm_client import SimpleLLMClient
+    from services.shared.utils.prompts import PromptManager, PromptTemplates
+except ImportError:
+    # Fallback для случая, если модули не найдены
+    from utils.llm_client import SimpleLLMClient
+    from utils.prompts import PromptManager, PromptTemplates
 
 logger = logging.getLogger(__name__)
 

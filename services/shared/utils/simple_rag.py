@@ -7,7 +7,13 @@ from sentence_transformers import SentenceTransformer
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from ..models.document import Document, DocumentChunk
+# Исправляем импорт на абсолютный
+try:
+    from services.shared.models.document import Document, DocumentChunk
+except ImportError:
+    # Fallback для случая, если модуль не найден
+    from models.document import Document, DocumentChunk
+
 from .llm_client import SimpleLLMClient, LLMResponse
 
 logger = logging.getLogger(__name__)

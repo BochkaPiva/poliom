@@ -41,11 +41,12 @@ print("✅ Все необходимые переменные окружения
 
 # Импортируем и запускаем бота
 try:
+    import asyncio
     from bot.main import main
     
     if __name__ == "__main__":
         print("🚀 Запуск POLIOM Telegram Bot...")
-        main()
+        asyncio.run(main())
         
 except ImportError as e:
     print(f"❌ Ошибка импорта: {e}")

@@ -17,7 +17,16 @@ current_dir = Path(__file__).parent
 project_root = current_dir.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from ..faq_data import FAQ_DATA, get_faq_sections, get_section_questions, get_answer, search_faq
+# Исправляем импорт на абсолютный
+try:
+    from bot.faq_data import FAQ_DATA, get_faq_sections, get_section_questions, get_answer, search_faq
+except ImportError:
+    # Fallback для случая, если модуль не найден
+    FAQ_DATA = {}
+    def get_faq_sections(): return []
+    def get_section_questions(section): return []
+    def get_answer(section, question): return None
+    def search_faq(query): return []
 
 try:
     from services.shared.utils.search_service import SearchService

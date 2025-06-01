@@ -8,10 +8,18 @@ from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 from sqlalchemy.orm import Session
 
-from .embeddings import EmbeddingService
-from .llm_service import LLMService
-from ..models.database import SessionLocal
-from ..models.document import DocumentChunk, Document
+# Исправляем импорты на абсолютные
+try:
+    from services.shared.utils.embeddings import EmbeddingService
+    from services.shared.utils.llm_service import LLMService
+    from services.shared.models.database import SessionLocal
+    from services.shared.models.document import DocumentChunk, Document
+except ImportError:
+    # Fallback для случая, если модули не найдены
+    from utils.embeddings import EmbeddingService
+    from utils.llm_service import LLMService
+    from models.database import SessionLocal
+    from models.document import DocumentChunk, Document
 
 logger = logging.getLogger(__name__)
 

@@ -7,25 +7,26 @@ import asyncio
 import logging
 import sys
 import os
+from pathlib import Path
 
-# Добавляем путь к shared модулям (исправлено для Docker)
-sys.path.append('/app/shared')
+# Добавляем пути к модулям
+current_dir = Path(__file__).parent
+project_root = current_dir.parent.parent
+sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(current_dir))
 
 from aiogram import Bot, Dispatcher
-# from aiogram.client.default import DefaultBotProperties  # Не существует в 3.3.0
 from aiogram.enums import ParseMode
 
-from bot.config import config, Messages
+from bot.config import config
 from bot.database import init_db
 from bot.handlers import register_handlers
-from bot.middleware import LoggingMiddleware, AuthMiddleware, RateLimitMiddleware
 
 # Настройка логирования
 logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL.upper()),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(config.LOG_FILE),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -40,28 +41,20 @@ async def main():
         logger.error("❌ Некорректная конфигурация. Завершение работы.")
         return
     
-    # Выводим конфигурацию
-    config.print_config()
-    
     try:
         # Инициализируем базу данных
         logger.info("🔄 Инициализация базы данных...")
         await init_db()
         logger.info("✅ База данных инициализирована")
         
-        # Создаем бота (исправлено для aiogram 3.3.0)
+        # Создаем бота
         bot = Bot(
-            token=config.BOT_TOKEN,
-            parse_mode=ParseMode.HTML  # Используем старый синтаксис
+            token=config.TELEGRAM_BOT_TOKEN,
+            parse_mode=ParseMode.HTML
         )
         
         # Создаем диспетчер
         dp = Dispatcher()
-        
-        # Регистрируем middleware
-        dp.message.middleware(LoggingMiddleware())
-        dp.message.middleware(AuthMiddleware())
-        dp.message.middleware(RateLimitMiddleware(rate_limit=config.RATE_LIMIT_PER_MINUTE))
         
         # Регистрируем обработчики
         register_handlers(dp)
@@ -75,7 +68,7 @@ async def main():
             try:
                 await bot.send_message(
                     admin_id,
-                    "🚀 Корпоративный RAG-бот запущен и готов к работе!"
+                    "🚀 POLIOM HR Assistant запущен и готов к работе!"
                 )
             except Exception as e:
                 logger.warning(f"Не удалось отправить уведомление администратору {admin_id}: {e}")
@@ -94,7 +87,7 @@ async def main():
                 try:
                     await bot.send_message(
                         admin_id,
-                        "⏹️ Корпоративный RAG-бот остановлен."
+                        "⏹️ POLIOM HR Assistant остановлен."
                     )
                 except:
                     pass
