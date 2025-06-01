@@ -1,0 +1,10 @@
+# Telegram Bot
+aiogram==3.3.0
+aiofiles==23.2.1
+
+# Database
+asyncpg==0.29.0
+sqlalchemy[asyncio]==2.0.23
+
+# Additional utilities
+python-dotenv==1.0.0 
