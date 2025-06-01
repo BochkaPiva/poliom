@@ -149,10 +149,29 @@ services:
           cpus: '0.5'
     restart: unless-stopped
 
+  # pgAdmin веб-интерфейс
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: rag_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "8080:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - rag_network
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
 volumes:
   postgres_data:
   document_uploads:
   ml_models_cache:  # Новый volume для кэширования ML моделей
+  pgadmin_data:  # Volume для pgAdmin
 
 networks:
   rag_network:
