@@ -1,105 +1,218 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Конфигурация для Telegram бота
+Конфигурация Telegram-бота POLIOM
+Управление переменными окружения и настройками
 """
 
 import os
-from typing import List
+import logging
+from typing import Optional
+from pathlib import Path
+from dotenv import load_dotenv
 
-class BotConfig:
-    """Конфигурация бота"""
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+class Config:
+    """Класс конфигурации для Telegram-бота"""
     
-    # Telegram Bot
-    BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    
-    # База данных
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://user:password@localhost:5432/poliom_db")
-    
-    # GigaChat API
-    GIGACHAT_API_KEY: str = os.getenv("GIGACHAT_API_KEY", "")
-    GIGACHAT_BASE_URL: str = os.getenv("GIGACHAT_BASE_URL", "https://gigachat.devices.sberbank.ru/api/v1")
-    
-    # Администраторы (ID пользователей Telegram)
-    ADMIN_IDS: List[int] = [
-        int(admin_id) for admin_id in os.getenv("ADMIN_IDS", "").split(",") 
-        if admin_id.strip().isdigit()
-    ]
-    
-    # Настройки RAG
-    MAX_CONTEXT_LENGTH: int = int(os.getenv("MAX_CONTEXT_LENGTH", "4000"))
-    MAX_DOCUMENTS_IN_CONTEXT: int = int(os.getenv("MAX_DOCUMENTS_IN_CONTEXT", "5"))
-    SIMILARITY_THRESHOLD: float = float(os.getenv("SIMILARITY_THRESHOLD", "0.7"))
-    
-    # Настройки бота
-    RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "10"))
-    MAX_MESSAGE_LENGTH: int = int(os.getenv("MAX_MESSAGE_LENGTH", "4096"))
-    
-    # Логирование
-    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
-    LOG_FILE: str = os.getenv("LOG_FILE", "bot.log")
-    
-    # Пути к файлам
-    UPLOADS_DIR: str = os.getenv("UPLOADS_DIR", "/app/uploads")
-    
-    # Настройки эмбеддингов
-    EMBEDDINGS_MODEL: str = os.getenv("EMBEDDINGS_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-    EMBEDDINGS_CACHE_SIZE: int = int(os.getenv("EMBEDDINGS_CACHE_SIZE", "1000"))
-    
-    # Настройки Redis (если используется)
-    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    
-    # Настройки производительности
-    MAX_WORKERS: int = int(os.getenv("MAX_WORKERS", "4"))
-    REQUEST_TIMEOUT: int = int(os.getenv("REQUEST_TIMEOUT", "30"))
-    
-    @classmethod
-    def validate(cls) -> bool:
-        """
-        Проверка корректности конфигурации
+    def __init__(self):
+        """Инициализация конфигурации"""
+        # Загружаем переменные окружения
+        self._load_environment()
         
-        Returns:
-            True если конфигурация корректна
-        """
+        # Основные настройки бота
+        self.TELEGRAM_BOT_TOKEN: Optional[str] = os.getenv('TELEGRAM_BOT_TOKEN')
+        self.GIGACHAT_API_KEY: Optional[str] = os.getenv('GIGACHAT_API_KEY')
+        self.DATABASE_URL: Optional[str] = os.getenv('DATABASE_URL')
+        
+        # Настройки поиска
+        self.SEARCH_LIMIT: int = int(os.getenv('SEARCH_LIMIT', '5'))
+        self.SIMILARITY_THRESHOLD: float = float(os.getenv('SIMILARITY_THRESHOLD', '0.3'))
+        
+        # Настройки LLM
+        self.LLM_TIMEOUT: int = int(os.getenv('LLM_TIMEOUT', '30'))
+        self.LLM_MAX_TOKENS: int = int(os.getenv('LLM_MAX_TOKENS', '2000'))
+        
+        # Настройки бота
+        self.BOT_TIMEOUT: int = int(os.getenv('BOT_TIMEOUT', '30'))
+        self.MAX_MESSAGE_LENGTH: int = int(os.getenv('MAX_MESSAGE_LENGTH', '4096'))
+        
+        # Настройки логирования
+        self.LOG_LEVEL: str = os.getenv('LOG_LEVEL', 'INFO')
+        self.LOG_FILE: Optional[str] = os.getenv('LOG_FILE')
+        
+        # Настройки разработки
+        self.DEBUG: bool = os.getenv('DEBUG', 'False').lower() == 'true'
+        self.WEBHOOK_URL: Optional[str] = os.getenv('WEBHOOK_URL')
+        self.WEBHOOK_PORT: int = int(os.getenv('WEBHOOK_PORT', '8443'))
+        
+        # Настройки FAQ
+        self.FAQ_CACHE_TTL: int = int(os.getenv('FAQ_CACHE_TTL', '3600'))  # 1 час
+        self.FAQ_SEARCH_LIMIT: int = int(os.getenv('FAQ_SEARCH_LIMIT', '3'))
+        
+        # Настройки безопасности
+        self.ALLOWED_USERS: Optional[str] = os.getenv('ALLOWED_USERS')  # Список ID через запятую
+        self.ADMIN_USERS: Optional[str] = os.getenv('ADMIN_USERS')  # Список ID админов
+        
+        # Настройки производительности
+        self.CONCURRENT_REQUESTS: int = int(os.getenv('CONCURRENT_REQUESTS', '10'))
+        self.REQUEST_TIMEOUT: int = int(os.getenv('REQUEST_TIMEOUT', '60'))
+        
+        logger.info("Конфигурация загружена")
+    
+    def _load_environment(self) -> None:
+        """Загрузка переменных окружения из .env файла"""
+        # Ищем .env файл в текущей директории и родительских
+        current_dir = Path(__file__).parent
+        for path in [current_dir, current_dir.parent, current_dir.parent.parent]:
+            env_file = path / '.env'
+            if env_file.exists():
+                load_dotenv(env_file)
+                logger.info(f"Загружен .env файл: {env_file}")
+                break
+        else:
+            logger.warning("Файл .env не найден")
+    
+    def validate(self) -> bool:
+        """Валидация конфигурации"""
         errors = []
         
-        if not cls.BOT_TOKEN:
+        # Проверяем обязательные параметры
+        if not self.TELEGRAM_BOT_TOKEN:
             errors.append("TELEGRAM_BOT_TOKEN не установлен")
         
-        if not cls.DATABASE_URL:
-            errors.append("DATABASE_URL не установлен")
-        
-        if not cls.GIGACHAT_API_KEY:
+        if not self.GIGACHAT_API_KEY:
             errors.append("GIGACHAT_API_KEY не установлен")
         
-        if cls.MAX_CONTEXT_LENGTH <= 0:
-            errors.append("MAX_CONTEXT_LENGTH должен быть больше 0")
+        if not self.DATABASE_URL:
+            errors.append("DATABASE_URL не установлен")
         
-        if cls.SIMILARITY_THRESHOLD < 0 or cls.SIMILARITY_THRESHOLD > 1:
-            errors.append("SIMILARITY_THRESHOLD должен быть между 0 и 1")
+        # Проверяем числовые параметры
+        if self.SEARCH_LIMIT <= 0:
+            errors.append("SEARCH_LIMIT должен быть больше 0")
         
+        if not (0.0 <= self.SIMILARITY_THRESHOLD <= 1.0):
+            errors.append("SIMILARITY_THRESHOLD должен быть между 0.0 и 1.0")
+        
+        if self.LLM_TIMEOUT <= 0:
+            errors.append("LLM_TIMEOUT должен быть больше 0")
+        
+        if self.BOT_TIMEOUT <= 0:
+            errors.append("BOT_TIMEOUT должен быть больше 0")
+        
+        # Логируем ошибки
         if errors:
-            print("❌ Ошибки конфигурации:")
             for error in errors:
-                print(f"  - {error}")
+                logger.error(f"Ошибка конфигурации: {error}")
             return False
         
+        logger.info("Конфигурация валидна")
         return True
     
-    @classmethod
-    def print_config(cls):
-        """Вывод текущей конфигурации (без секретных данных)"""
-        print("🔧 Конфигурация бота:")
-        print(f"  - База данных: {cls.DATABASE_URL.split('@')[-1] if '@' in cls.DATABASE_URL else 'не настроена'}")
-        print(f"  - Администраторы: {len(cls.ADMIN_IDS)} пользователей")
-        print(f"  - Максимальная длина контекста: {cls.MAX_CONTEXT_LENGTH}")
-        print(f"  - Максимум документов в контексте: {cls.MAX_DOCUMENTS_IN_CONTEXT}")
-        print(f"  - Порог схожести: {cls.SIMILARITY_THRESHOLD}")
-        print(f"  - Лимит запросов в минуту: {cls.RATE_LIMIT_PER_MINUTE}")
-        print(f"  - Уровень логирования: {cls.LOG_LEVEL}")
-        print(f"  - Модель эмбеддингов: {cls.EMBEDDINGS_MODEL}")
-        print(f"  - Максимум воркеров: {cls.MAX_WORKERS}")
+    def get_allowed_users(self) -> list[int]:
+        """Получить список разрешенных пользователей"""
+        if not self.ALLOWED_USERS:
+            return []
+        
+        try:
+            return [int(user_id.strip()) for user_id in self.ALLOWED_USERS.split(',')]
+        except ValueError:
+            logger.error("Неверный формат ALLOWED_USERS")
+            return []
+    
+    def get_admin_users(self) -> list[int]:
+        """Получить список администраторов"""
+        if not self.ADMIN_USERS:
+            return []
+        
+        try:
+            return [int(user_id.strip()) for user_id in self.ADMIN_USERS.split(',')]
+        except ValueError:
+            logger.error("Неверный формат ADMIN_USERS")
+            return []
+    
+    def is_user_allowed(self, user_id: int) -> bool:
+        """Проверить, разрешен ли пользователь"""
+        allowed_users = self.get_allowed_users()
+        # Если список пуст, разрешаем всех
+        return not allowed_users or user_id in allowed_users
+    
+    def is_user_admin(self, user_id: int) -> bool:
+        """Проверить, является ли пользователь администратором"""
+        return user_id in self.get_admin_users()
+    
+    def setup_logging(self) -> None:
+        """Настройка логирования"""
+        # Устанавливаем уровень логирования
+        log_level = getattr(logging, self.LOG_LEVEL.upper(), logging.INFO)
+        logging.getLogger().setLevel(log_level)
+        
+        # Настраиваем формат
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        
+        # Консольный обработчик
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        
+        # Файловый обработчик (если указан)
+        if self.LOG_FILE:
+            file_handler = logging.FileHandler(self.LOG_FILE, encoding='utf-8')
+            file_handler.setFormatter(formatter)
+            logging.getLogger().addHandler(file_handler)
+        
+        logger.info(f"Логирование настроено: уровень {self.LOG_LEVEL}")
+    
+    def get_info(self) -> dict:
+        """Получить информацию о конфигурации"""
+        return {
+            'bot_configured': bool(self.TELEGRAM_BOT_TOKEN),
+            'gigachat_configured': bool(self.GIGACHAT_API_KEY),
+            'database_configured': bool(self.DATABASE_URL),
+            'debug_mode': self.DEBUG,
+            'search_limit': self.SEARCH_LIMIT,
+            'similarity_threshold': self.SIMILARITY_THRESHOLD,
+            'llm_timeout': self.LLM_TIMEOUT,
+            'bot_timeout': self.BOT_TIMEOUT,
+            'log_level': self.LOG_LEVEL,
+            'webhook_configured': bool(self.WEBHOOK_URL),
+            'allowed_users_count': len(self.get_allowed_users()),
+            'admin_users_count': len(self.get_admin_users()),
+        }
+    
+    def __str__(self) -> str:
+        """Строковое представление конфигурации"""
+        info = self.get_info()
+        return f"Config(bot={info['bot_configured']}, gigachat={info['gigachat_configured']}, db={info['database_configured']})"
+
+# Глобальный экземпляр конфигурации
+config = Config()
+
+# Функции для удобного доступа
+def get_config() -> Config:
+    """Получить экземпляр конфигурации"""
+    return config
+
+def validate_config() -> bool:
+    """Валидировать конфигурацию"""
+    return config.validate()
+
+def setup_logging() -> None:
+    """Настроить логирование"""
+    config.setup_logging()
+
+# Автоматическая настройка логирования при импорте
+setup_logging()
 
 # Создаем экземпляр конфигурации
-config = BotConfig()
+config = Config()
 
 # Сообщения бота
 class Messages:
