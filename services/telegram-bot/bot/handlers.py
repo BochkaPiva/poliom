@@ -505,8 +505,8 @@ async def faq_section_callback(callback: CallbackQuery):
             section_text,
             reply_markup=keyboard,
             parse_mode='Markdown'
-        )
-        
+            )
+            
     except Exception as e:
         logger.error(f"Ошибка в faq_section_callback: {e}")
         await callback.message.edit_text(
@@ -571,7 +571,7 @@ async def faq_item_callback(callback: CallbackQuery):
             response=item_data['content'],
             documents_used="FAQ Database"
         )
-        
+            
     except Exception as e:
         logger.error(f"Ошибка в faq_item_callback: {e}")
         await callback.message.edit_text(

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-Проверка обработанных документов и поиск по ним
+Диагностический скрипт для проверки документов в базе данных
 """
 
 import os
 import sys
 from pathlib import Path
-from datetime import datetime
 
 # Добавляем путь к services
 services_path = Path(__file__).parent.parent
@@ -19,192 +18,177 @@ load_dotenv('.env.local')
 from sqlalchemy.orm import sessionmaker
 from shared.models.database import engine
 from shared.models import Document, DocumentChunk
-from shared.utils.embeddings import EmbeddingService
 
 # Создаем сессию базы данных
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def check_documents():
-    """Проверяем все документы в базе"""
-    print("📚 Проверяем документы в базе данных...\n")
+    """Проверяем все документы в базе данных"""
+    print("📋 ПРОВЕРКА ДОКУМЕНТОВ В БАЗЕ ДАННЫХ")
+    print("=" * 60)
     
     db = SessionLocal()
     try:
+        # Получаем все документы
         documents = db.query(Document).all()
         
         if not documents:
-            print("❌ Документов в базе нет")
-            return False
+            print("❌ Документы не найдены в базе данных")
+            return
         
         print(f"📊 Найдено документов: {len(documents)}")
-        print("="*60)
+        print()
         
         for doc in documents:
-            print(f"📄 ID: {doc.id}")
-            print(f"   Файл: {doc.original_filename}")
-            print(f"   Статус: {doc.processing_status}")
-            print(f"   Чанков: {doc.chunks_count or 0}")
-            print(f"   Загружен: {doc.created_at}")
+            print(f"📄 Документ ID {doc.id}: {doc.original_filename}")
+            print(f"   📁 Путь: {doc.file_path}")
+            print(f"   📊 Статус: {doc.processing_status}")
+            print(f"   📈 Размер файла: {doc.file_size} байт")
+            print(f"   🗓️ Загружен: {doc.created_at}")
+            
             if doc.processed_at:
-                print(f"   Обработан: {doc.processed_at}")
+                print(f"   ✅ Обработан: {doc.processed_at}")
+            
+            if doc.chunks_count:
+                print(f"   📦 Чанков: {doc.chunks_count}")
+            
             if doc.error_message:
                 print(f"   ❌ Ошибка: {doc.error_message}")
-            print("-" * 40)
-        
-        return True
-        
-    except Exception as e:
-        print(f"❌ Ошибка проверки документов: {e}")
-        return False
-    finally:
-        db.close()
-
-def check_chunks():
-    """Проверяем чанки документов"""
-    print("\n🧩 Проверяем чанки документов...\n")
-    
-    db = SessionLocal()
-    try:
-        chunks = db.query(DocumentChunk).all()
-        
-        if not chunks:
-            print("❌ Чанков в базе нет")
-            return False
-        
-        print(f"📊 Найдено чанков: {len(chunks)}")
-        
-        # Группируем по документам
-        chunks_by_doc = {}
-        for chunk in chunks:
-            if chunk.document_id not in chunks_by_doc:
-                chunks_by_doc[chunk.document_id] = []
-            chunks_by_doc[chunk.document_id].append(chunk)
-        
-        print("="*60)
-        for doc_id, doc_chunks in chunks_by_doc.items():
-            document = db.query(Document).filter(Document.id == doc_id).first()
-            print(f"📄 Документ: {document.original_filename if document else f'ID {doc_id}'}")
-            print(f"   Чанков: {len(doc_chunks)}")
             
-            # Показываем первые 3 чанка
-            for i, chunk in enumerate(doc_chunks[:3]):
-                print(f"   🧩 Чанк {chunk.chunk_index}: {len(chunk.content)} символов")
-                print(f"      Текст: {chunk.content[:100]}...")
-                print(f"      Эмбеддинг: {'✅' if chunk.embedding else '❌'}")
+            # Проверяем существование файла
+            file_path = Path(doc.file_path)
+            if file_path.exists():
+                actual_size = file_path.stat().st_size
+                print(f"   ✅ Файл существует (размер: {actual_size} байт)")
+                if actual_size != doc.file_size:
+                    print(f"   ⚠️ ВНИМАНИЕ: Размер файла не совпадает с БД!")
+            else:
+                print(f"   ❌ ФАЙЛ НЕ НАЙДЕН: {doc.file_path}")
             
-            if len(doc_chunks) > 3:
-                print(f"   ... и еще {len(doc_chunks) - 3} чанков")
-            print("-" * 40)
-        
-        return True
-        
-    except Exception as e:
-        print(f"❌ Ошибка проверки чанков: {e}")
-        return False
-    finally:
-        db.close()
-
-def test_search(query: str, top_k: int = 5):
-    """Тестируем поиск по документам"""
-    print(f"\n🔍 Поиск по запросу: '{query}'\n")
-    
-    db = SessionLocal()
-    try:
-        # Инициализируем сервис эмбеддингов
-        embedding_service = EmbeddingService()
-        
-        # Создаем эмбеддинг для запроса
-        query_embedding = embedding_service.get_embedding(query)
-        if not query_embedding:
-            print("❌ Не удалось создать эмбеддинг для запроса")
-            return False
-        
-        # Получаем все чанки с эмбеддингами
-        chunks = db.query(DocumentChunk).filter(DocumentChunk.embedding.isnot(None)).all()
-        
-        if not chunks:
-            print("❌ Нет чанков с эмбеддингами")
-            return False
-        
-        print(f"📊 Поиск среди {len(chunks)} чанков...")
-        
-        # Вычисляем схожесть для каждого чанка
-        similarities = []
-        for chunk in chunks:
-            try:
-                similarity = embedding_service.calculate_similarity(query_embedding, chunk.embedding)
-                similarities.append((chunk, similarity))
-            except Exception as e:
-                print(f"⚠️ Ошибка вычисления схожести для чанка {chunk.id}: {e}")
-                continue
-        
-        # Сортируем по убыванию схожести
-        similarities.sort(key=lambda x: x[1], reverse=True)
-        
-        # Показываем топ результатов
-        print(f"\n🏆 Топ-{min(top_k, len(similarities))} результатов:")
-        print("="*60)
-        
-        for i, (chunk, similarity) in enumerate(similarities[:top_k]):
-            document = db.query(Document).filter(Document.id == chunk.document_id).first()
+            # Проверяем чанки
+            chunks = db.query(DocumentChunk).filter(DocumentChunk.document_id == doc.id).all()
+            actual_chunks = len(chunks)
             
-            print(f"#{i+1} Схожесть: {similarity:.3f}")
-            print(f"   📄 Документ: {document.original_filename if document else f'ID {chunk.document_id}'}")
-            print(f"   🧩 Чанк {chunk.chunk_index}: {len(chunk.content)} символов")
-            print(f"   📝 Текст: {chunk.content[:200]}...")
-            print("-" * 40)
-        
-        return True
-        
-    except Exception as e:
-        print(f"❌ Ошибка поиска: {e}")
-        return False
-    finally:
-        db.close()
-
-def main():
-    """Основная функция"""
-    print("🚀 Проверка системы обработки документов\n")
-    
-    # Проверяем документы
-    docs_ok = check_documents()
-    
-    # Проверяем чанки
-    chunks_ok = check_chunks()
-    
-    if docs_ok and chunks_ok:
-        # Тестируем поиск
-        print("\n" + "="*60)
-        print("🔍 ТЕСТИРОВАНИЕ ПОИСКА")
-        print("="*60)
-        
-        test_queries = [
-            "документ",
-            "текст",
-            "система",
-            "обработка"
-        ]
-        
-        for query in test_queries:
-            test_search(query, top_k=3)
+            if actual_chunks > 0:
+                print(f"   📦 Фактически чанков в БД: {actual_chunks}")
+                if doc.chunks_count != actual_chunks:
+                    print(f"   ⚠️ ВНИМАНИЕ: Количество чанков не совпадает!")
+                
+                # Статистика размеров чанков
+                chunk_sizes = [len(chunk.content) for chunk in chunks]
+                if chunk_sizes:
+                    print(f"   📏 Размеры чанков: мин={min(chunk_sizes)}, макс={max(chunk_sizes)}, средний={sum(chunk_sizes)/len(chunk_sizes):.1f}")
+            else:
+                print(f"   📦 Чанки в БД: отсутствуют")
+            
             print()
+        
+        # Общая статистика
+        print("=" * 60)
+        print("📊 ОБЩАЯ СТАТИСТИКА:")
+        
+        statuses = {}
+        total_chunks = 0
+        total_size = 0
+        
+        for doc in documents:
+            status = doc.processing_status
+            statuses[status] = statuses.get(status, 0) + 1
+            
+            if doc.chunks_count:
+                total_chunks += doc.chunks_count
+            
+            if doc.file_size:
+                total_size += doc.file_size
+        
+        print(f"📄 Всего документов: {len(documents)}")
+        print(f"📦 Всего чанков: {total_chunks}")
+        print(f"💾 Общий размер: {total_size:,} байт ({total_size/1024/1024:.2f} МБ)")
+        print()
+        
+        print("📊 По статусам:")
+        for status, count in statuses.items():
+            print(f"   {status}: {count}")
+        
+    except Exception as e:
+        print(f"❌ Ошибка проверки: {str(e)}")
     
-    print("\n" + "="*60)
-    print("📊 ИТОГИ:")
-    print("="*60)
+    finally:
+        db.close()
+
+def check_specific_document(document_id: int):
+    """Детальная проверка конкретного документа"""
+    print(f"🔍 ДЕТАЛЬНАЯ ПРОВЕРКА ДОКУМЕНТА ID {document_id}")
+    print("=" * 60)
     
-    if docs_ok and chunks_ok:
-        print("🎉 Система работает отлично!")
-        print("✅ Документы загружены и обработаны")
-        print("✅ Чанки созданы с эмбеддингами")
-        print("✅ Поиск функционирует")
-        print("\n💡 Можно загружать новые документы через админ-панель!")
-    else:
-        print("⚠️ Система требует настройки")
-        if not docs_ok:
-            print("❌ Нет обработанных документов")
-        if not chunks_ok:
-            print("❌ Проблемы с чанками")
+    db = SessionLocal()
+    try:
+        # Получаем документ
+        document = db.query(Document).filter(Document.id == document_id).first()
+        
+        if not document:
+            print(f"❌ Документ с ID {document_id} не найден")
+            return
+        
+        print(f"📄 Документ: {document.original_filename}")
+        print(f"📁 Путь: {document.file_path}")
+        print(f"📊 Статус: {document.processing_status}")
+        print(f"📈 Размер: {document.file_size} байт")
+        print(f"🗓️ Создан: {document.created_at}")
+        print(f"🔄 Обновлен: {document.updated_at}")
+        
+        if document.processed_at:
+            print(f"✅ Обработан: {document.processed_at}")
+        
+        if document.error_message:
+            print(f"❌ Ошибка: {document.error_message}")
+        
+        print()
+        
+        # Проверяем файл
+        file_path = Path(document.file_path)
+        print("📁 ПРОВЕРКА ФАЙЛА:")
+        if file_path.exists():
+            stat = file_path.stat()
+            print(f"   ✅ Файл существует")
+            print(f"   📈 Размер: {stat.st_size} байт")
+            print(f"   🗓️ Изменен: {stat.st_mtime}")
+        else:
+            print(f"   ❌ Файл не найден")
+        
+        print()
+        
+        # Проверяем чанки
+        chunks = db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).all()
+        print(f"📦 ПРОВЕРКА ЧАНКОВ:")
+        print(f"   📊 Количество: {len(chunks)}")
+        
+        if chunks:
+            chunk_sizes = [len(chunk.content) for chunk in chunks]
+            print(f"   📏 Размеры: мин={min(chunk_sizes)}, макс={max(chunk_sizes)}, средний={sum(chunk_sizes)/len(chunk_sizes):.1f}")
+            
+            print(f"   📋 Первые 3 чанка:")
+            for i, chunk in enumerate(chunks[:3]):
+                preview = chunk.content[:100].replace('\n', ' ')
+                print(f"      {i+1}. [{len(chunk.content)} символов] {preview}...")
+        else:
+            print(f"   📦 Чанки отсутствуют")
+    
+    except Exception as e:
+        print(f"❌ Ошибка проверки документа: {str(e)}")
+    
+    finally:
+        db.close()
 
 if __name__ == "__main__":
-    main() 
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Проверка документов в базе данных")
+    parser.add_argument("--doc-id", type=int, help="ID конкретного документа для детальной проверки")
+    
+    args = parser.parse_args()
+    
+    if args.doc_id:
+        check_specific_document(args.doc_id)
+    else:
+        check_documents() 

@@ -124,7 +124,8 @@ class DocumentProcessor:
     
     def split_into_chunks(self, text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
         """
-        Разбивает текст на чанки
+        УЛУЧШЕННЫЙ алгоритм разбиения текста на чанки
+        Учитывает границы предложений и создает качественные чанки
         
         Args:
             text: Исходный текст
@@ -137,32 +138,83 @@ class DocumentProcessor:
         if not text or not text.strip():
             return []
         
-        chunks = []
         text = text.strip()
         
         # Если текст короткий, возвращаем его как один чанк
         if len(text) <= chunk_size:
             return [text]
         
+        chunks = []
         start = 0
+        
         while start < len(text):
-            end = start + chunk_size
+            # Определяем конец текущего чанка
+            end = min(start + chunk_size, len(text))
             
-            # Если это не последний чанк, ищем ближайший разделитель
+            # Если это не последний чанк, ищем хорошее место для разрыва
             if end < len(text):
-                # Ищем ближайший разделитель (точка, перенос строки, пробел)
-                for separator in ['. ', '\n', ' ']:
-                    sep_pos = text.rfind(separator, start, end)
-                    if sep_pos != -1:
-                        end = sep_pos + len(separator)
+                # Ищем ближайшую границу предложения в последних 200 символах чанка
+                search_start = max(start, end - 200)
+                
+                # Ищем разделители в порядке приоритета
+                best_break = -1
+                
+                # 1. Точка с пробелом
+                for i in range(end - 1, search_start - 1, -1):
+                    if i < len(text) - 1 and text[i] == '.' and text[i + 1] == ' ':
+                        best_break = i + 1
                         break
+                
+                # 2. Восклицательный или вопросительный знак с пробелом
+                if best_break == -1:
+                    for i in range(end - 1, search_start - 1, -1):
+                        if i < len(text) - 1 and text[i] in '!?' and text[i + 1] == ' ':
+                            best_break = i + 1
+                            break
+                
+                # 3. Двойной перенос строки
+                if best_break == -1:
+                    double_newline = text.rfind('\n\n', search_start, end)
+                    if double_newline != -1:
+                        best_break = double_newline + 2
+                
+                # 4. Одинарный перенос строки
+                if best_break == -1:
+                    newline = text.rfind('\n', search_start, end)
+                    if newline != -1:
+                        best_break = newline + 1
+                
+                # 5. Пробел (последний вариант)
+                if best_break == -1:
+                    space = text.rfind(' ', search_start, end)
+                    if space != -1:
+                        best_break = space + 1
+                
+                # Если нашли хорошее место для разрыва, используем его
+                if best_break != -1:
+                    end = best_break
             
+            # Извлекаем чанк
             chunk = text[start:end].strip()
-            if chunk:
+            
+            # Добавляем чанк только если он не пустой и достаточно длинный
+            if chunk and len(chunk) > 10:  # Минимум 10 символов
                 chunks.append(chunk)
             
+            # Вычисляем начало следующего чанка
+            if end >= len(text):
+                break
+            
             # Следующий чанк начинается с учетом перекрытия
-            start = max(start + 1, end - overlap)
+            # НО не раньше чем через минимальный шаг
+            min_step = max(50, chunk_size // 4)  # Минимальный шаг - 50 символов или 1/4 размера чанка
+            next_start = max(start + min_step, end - overlap)
+            
+            # Убеждаемся, что мы продвигаемся вперед
+            if next_start <= start:
+                next_start = start + min_step
+            
+            start = next_start
         
         return chunks
     

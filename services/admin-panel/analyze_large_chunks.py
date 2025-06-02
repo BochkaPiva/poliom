@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Анализ больших чанков для понимания проблемы
+Анализ размеров чанков в базе данных
 """
 
-import sys
 import os
+import sys
 from pathlib import Path
 
 # Добавляем путь к services
@@ -15,12 +15,17 @@ sys.path.append(str(services_path))
 from dotenv import load_dotenv
 load_dotenv('.env.local')
 
-from shared.models.database import SessionLocal
-from shared.models.document import DocumentChunk, Document
+from sqlalchemy.orm import sessionmaker
+from shared.models.database import engine
+from shared.models import Document, DocumentChunk
+
+# Создаем сессию базы данных
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def analyze_chunk_sizes():
     """Анализируем размеры чанков"""
-    print("🔍 АНАЛИЗ РАЗМЕРОВ ЧАНКОВ\n")
+    print("📊 АНАЛИЗ РАЗМЕРОВ ЧАНКОВ")
+    print("=" * 60)
     
     db = SessionLocal()
     try:
@@ -28,161 +33,187 @@ def analyze_chunk_sizes():
         chunks = db.query(DocumentChunk).all()
         
         if not chunks:
-            print("❌ Чанков в базе нет")
+            print("❌ Чанки не найдены в базе данных")
             return
         
-        print(f"📊 Всего чанков: {len(chunks)}")
+        print(f"📦 Всего чанков: {len(chunks)}")
+        print()
         
         # Анализируем размеры
-        sizes = [chunk.content_length for chunk in chunks]
-        sizes.sort()
+        sizes = [len(chunk.content) for chunk in chunks]
         
-        print(f"\n📈 Статистика размеров:")
-        print(f"   Минимальный: {min(sizes)} символов")
-        print(f"   Максимальный: {max(sizes)} символов")
-        print(f"   Средний: {sum(sizes) // len(sizes)} символов")
-        print(f"   Медианный: {sizes[len(sizes)//2]} символов")
+        # Общая статистика
+        total_size = sum(sizes)
+        min_size = min(sizes)
+        max_size = max(sizes)
+        avg_size = total_size / len(sizes)
         
-        # Распределение по размерам
-        tiny = len([s for s in sizes if s < 10])
-        small = len([s for s in sizes if 10 <= s < 100])
-        medium = len([s for s in sizes if 100 <= s < 500])
-        large = len([s for s in sizes if s >= 500])
+        print("📈 ОБЩАЯ СТАТИСТИКА РАЗМЕРОВ:")
+        print(f"   Минимальный: {min_size} символов")
+        print(f"   Максимальный: {max_size} символов")
+        print(f"   Средний: {avg_size:.1f} символов")
+        print(f"   Общий размер: {total_size:,} символов")
+        print()
         
-        print(f"\n📊 Распределение:")
-        print(f"   Крошечные (<10): {tiny} ({tiny/len(sizes)*100:.1f}%)")
-        print(f"   Маленькие (10-100): {small} ({small/len(sizes)*100:.1f}%)")
-        print(f"   Средние (100-500): {medium} ({medium/len(sizes)*100:.1f}%)")
-        print(f"   Большие (>=500): {large} ({large/len(sizes)*100:.1f}%)")
+        # Распределение по диапазонам
+        ranges = [
+            (0, 100, "Очень маленькие (0-100)"),
+            (101, 300, "Маленькие (101-300)"),
+            (301, 500, "Небольшие (301-500)"),
+            (501, 800, "Средние (501-800)"),
+            (801, 1000, "Оптимальные (801-1000)"),
+            (1001, 1500, "Большие (1001-1500)"),
+            (1501, float('inf'), "Очень большие (1501+)")
+        ]
         
-        return chunks
+        print("📊 РАСПРЕДЕЛЕНИЕ ПО РАЗМЕРАМ:")
+        for min_r, max_r, label in ranges:
+            count = len([s for s in sizes if min_r <= s <= max_r])
+            percentage = (count / len(sizes)) * 100
+            print(f"   {label}: {count} чанков ({percentage:.1f}%)")
         
+        print()
+        
+        # Анализ по документам
+        print("📄 АНАЛИЗ ПО ДОКУМЕНТАМ:")
+        documents = db.query(Document).all()
+        
+        for doc in documents:
+            doc_chunks = [chunk for chunk in chunks if chunk.document_id == doc.id]
+            if doc_chunks:
+                doc_sizes = [len(chunk.content) for chunk in doc_chunks]
+                doc_min = min(doc_sizes)
+                doc_max = max(doc_sizes)
+                doc_avg = sum(doc_sizes) / len(doc_sizes)
+                
+                print(f"   📄 {doc.original_filename}:")
+                print(f"      Чанков: {len(doc_chunks)}")
+                print(f"      Размеры: мин={doc_min}, макс={doc_max}, средний={doc_avg:.1f}")
+        
+        print()
+        
+        # Поиск проблемных чанков
+        print("⚠️ ПРОБЛЕМНЫЕ ЧАНКИ:")
+        
+        # Слишком маленькие чанки
+        small_chunks = [chunk for chunk in chunks if len(chunk.content) < 100]
+        if small_chunks:
+            print(f"   📉 Слишком маленькие (<100 символов): {len(small_chunks)}")
+            for chunk in small_chunks[:5]:  # Показываем первые 5
+                preview = chunk.content[:50].replace('\n', ' ')
+                print(f"      ID {chunk.id}: {len(chunk.content)} символов - '{preview}...'")
+        
+        # Слишком большие чанки
+        large_chunks = [chunk for chunk in chunks if len(chunk.content) > 1500]
+        if large_chunks:
+            print(f"   📈 Слишком большие (>1500 символов): {len(large_chunks)}")
+            for chunk in large_chunks[:5]:  # Показываем первые 5
+                preview = chunk.content[:50].replace('\n', ' ')
+                print(f"      ID {chunk.id}: {len(chunk.content)} символов - '{preview}...'")
+        
+        if not small_chunks and not large_chunks:
+            print("   ✅ Проблемных чанков не найдено")
+        
+        print()
+        
+        # Рекомендации
+        print("💡 РЕКОМЕНДАЦИИ:")
+        
+        small_percentage = (len(small_chunks) / len(chunks)) * 100
+        large_percentage = (len(large_chunks) / len(chunks)) * 100
+        optimal_percentage = (len([s for s in sizes if 500 <= s <= 1000]) / len(sizes)) * 100
+        
+        if small_percentage > 10:
+            print(f"   ⚠️ Много маленьких чанков ({small_percentage:.1f}%) - возможно, нужно увеличить минимальный размер")
+        
+        if large_percentage > 5:
+            print(f"   ⚠️ Много больших чанков ({large_percentage:.1f}%) - возможно, нужно улучшить алгоритм разбиения")
+        
+        if optimal_percentage > 70:
+            print(f"   ✅ Хорошее распределение размеров ({optimal_percentage:.1f}% в оптимальном диапазоне)")
+        else:
+            print(f"   ⚠️ Только {optimal_percentage:.1f}% чанков в оптимальном диапазоне (500-1000 символов)")
+        
+        if avg_size < 500:
+            print("   💡 Средний размер чанка мал - рассмотрите увеличение chunk_size")
+        elif avg_size > 1200:
+            print("   💡 Средний размер чанка велик - рассмотрите уменьшение chunk_size")
+        else:
+            print("   ✅ Средний размер чанка в норме")
+    
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
-        return []
+        print(f"❌ Ошибка анализа: {str(e)}")
+    
     finally:
         db.close()
 
-def show_large_chunks():
-    """Показываем большие чанки"""
-    print("\n🔍 АНАЛИЗ БОЛЬШИХ ЧАНКОВ\n")
+def analyze_document_chunks(document_id: int):
+    """Анализируем чанки конкретного документа"""
+    print(f"🔍 АНАЛИЗ ЧАНКОВ ДОКУМЕНТА ID {document_id}")
+    print("=" * 60)
     
     db = SessionLocal()
     try:
-        # Получаем чанки размером больше 500 символов
-        large_chunks = db.query(DocumentChunk).filter(
-            DocumentChunk.content_length >= 500
-        ).order_by(DocumentChunk.content_length.desc()).limit(5).all()
-        
-        if not large_chunks:
-            print("❌ Больших чанков не найдено")
+        # Получаем документ
+        document = db.query(Document).filter(Document.id == document_id).first()
+        if not document:
+            print(f"❌ Документ с ID {document_id} не найден")
             return
         
-        print(f"📄 Найдено {len(large_chunks)} больших чанков:")
+        print(f"📄 Документ: {document.original_filename}")
+        print()
         
-        for i, chunk in enumerate(large_chunks):
-            document = db.query(Document).filter(Document.id == chunk.document_id).first()
-            
-            print(f"\n🧩 ЧАНК #{i+1}")
-            print(f"   ID: {chunk.id}")
-            print(f"   Документ: {document.original_filename if document else f'ID {chunk.document_id}'}")
-            print(f"   Индекс: {chunk.chunk_index}")
-            print(f"   Размер: {chunk.content_length} символов")
-            print(f"   Содержимое:")
-            print(f"   {'-'*60}")
-            print(f"   {chunk.content[:300]}...")
-            if len(chunk.content) > 300:
-                print(f"   [... еще {len(chunk.content) - 300} символов]")
-            print(f"   {'-'*60}")
-        
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
-    finally:
-        db.close()
-
-def show_small_chunks():
-    """Показываем маленькие чанки"""
-    print("\n🔍 АНАЛИЗ МАЛЕНЬКИХ ЧАНКОВ\n")
-    
-    db = SessionLocal()
-    try:
-        # Получаем чанки размером меньше 50 символов
-        small_chunks = db.query(DocumentChunk).filter(
-            DocumentChunk.content_length < 50
-        ).order_by(DocumentChunk.chunk_index).limit(10).all()
-        
-        if not small_chunks:
-            print("❌ Маленьких чанков не найдено")
-            return
-        
-        print(f"📄 Найдено {len(small_chunks)} маленьких чанков:")
-        
-        for i, chunk in enumerate(small_chunks):
-            document = db.query(Document).filter(Document.id == chunk.document_id).first()
-            
-            print(f"\n🧩 ЧАНК #{i+1}")
-            print(f"   ID: {chunk.id}")
-            print(f"   Документ: {document.original_filename if document else f'ID {chunk.document_id}'}")
-            print(f"   Индекс: {chunk.chunk_index}")
-            print(f"   Размер: {chunk.content_length} символов")
-            print(f"   Содержимое: '{chunk.content}'")
-        
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
-    finally:
-        db.close()
-
-def analyze_sequential_chunks():
-    """Анализируем последовательные чанки"""
-    print("\n🔍 АНАЛИЗ ПОСЛЕДОВАТЕЛЬНЫХ ЧАНКОВ\n")
-    
-    db = SessionLocal()
-    try:
-        # Получаем первые 10 чанков по порядку
-        chunks = db.query(DocumentChunk).order_by(
-            DocumentChunk.document_id, 
-            DocumentChunk.chunk_index
-        ).limit(10).all()
+        # Получаем чанки документа
+        chunks = db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).all()
         
         if not chunks:
-            print("❌ Чанков не найдено")
+            print("❌ Чанки не найдены")
             return
         
-        print(f"📄 Первые 10 чанков по порядку:")
+        print(f"📦 Количество чанков: {len(chunks)}")
         
-        for chunk in chunks:
-            document = db.query(Document).filter(Document.id == chunk.document_id).first()
+        # Анализируем размеры
+        sizes = [len(chunk.content) for chunk in chunks]
+        
+        print(f"📊 Статистика размеров:")
+        print(f"   Минимальный: {min(sizes)} символов")
+        print(f"   Максимальный: {max(sizes)} символов")
+        print(f"   Средний: {sum(sizes)/len(sizes):.1f} символов")
+        print()
+        
+        # Показываем все чанки с размерами
+        print("📋 СПИСОК ЧАНКОВ:")
+        for i, chunk in enumerate(chunks):
+            size = len(chunk.content)
+            preview = chunk.content[:80].replace('\n', ' ')
             
-            print(f"\n🧩 Чанк {chunk.chunk_index} (ID: {chunk.id})")
-            print(f"   Документ: {document.original_filename if document else f'ID {chunk.document_id}'}")
-            print(f"   Размер: {chunk.content_length} символов")
-            print(f"   Содержимое: '{chunk.content[:100]}{'...' if len(chunk.content) > 100 else ''}'")
-        
+            # Определяем категорию размера
+            if size < 300:
+                category = "📉 Маленький"
+            elif size > 1200:
+                category = "📈 Большой"
+            else:
+                category = "✅ Нормальный"
+            
+            print(f"   {i+1:3d}. [{size:4d} символов] {category}")
+            print(f"        '{preview}...'")
+            print()
+    
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        print(f"❌ Ошибка анализа документа: {str(e)}")
+    
     finally:
         db.close()
 
-def main():
-    """Основная функция"""
-    print("🚀 ДЕТАЛЬНЫЙ АНАЛИЗ ЧАНКОВ\n")
-    
-    # Анализируем размеры
-    chunks = analyze_chunk_sizes()
-    
-    if chunks:
-        # Показываем большие чанки
-        show_large_chunks()
-        
-        # Показываем маленькие чанки
-        show_small_chunks()
-        
-        # Анализируем последовательные чанки
-        analyze_sequential_chunks()
-    
-    print("\n" + "="*60)
-    print("📊 АНАЛИЗ ЗАВЕРШЕН")
-    print("="*60)
-
 if __name__ == "__main__":
-    main() 
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Анализ размеров чанков")
+    parser.add_argument("--doc-id", type=int, help="ID конкретного документа для анализа")
+    
+    args = parser.parse_args()
+    
+    if args.doc_id:
+        analyze_document_chunks(args.doc_id)
+    else:
+        analyze_chunk_sizes() 

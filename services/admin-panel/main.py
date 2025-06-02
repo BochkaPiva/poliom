@@ -11,6 +11,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
+# Загружаем переменные окружения из .env.local
+from dotenv import load_dotenv
+load_dotenv('.env.local')
+
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Request, Cookie, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, text
 
 # Добавляем путь к shared модулям для локального запуска
 current_dir = Path(__file__).parent
@@ -371,31 +375,65 @@ async def upload_document(
 async def delete_document(document_id: int, request: Request, db: Session = Depends(get_db), admin: Admin = Depends(require_auth)):
     """Удаление документа"""
     try:
-        document = db.query(Document).filter(Document.id == document_id).first()
-        if not document:
+        # Получаем только основную информацию о документе без связанных объектов
+        document_info = db.execute(
+            text("SELECT id, title, original_filename, file_path, processing_status FROM documents WHERE id = :doc_id"),
+            {"doc_id": document_id}
+        ).fetchone()
+        
+        if not document_info:
             return templates.TemplateResponse("error.html", {
                 "request": request,
                 "error": "Документ не найден"
             })
         
-        # Удаляем файл с диска
+        doc_id, title, original_filename, file_path, status = document_info
+        
+        logger.info(f"Начинаю удаление документа {doc_id}: {title}")
+        
+        # 1. Удаляем чанки напрямую через SQL (избегаем проблем с эмбеддингами)
         try:
-            file_path = Path(document.file_path)
-            if file_path.exists():
-                file_path.unlink()
+            chunks_result = db.execute(text("DELETE FROM document_chunks WHERE document_id = :doc_id"), {"doc_id": document_id})
+            deleted_chunks = chunks_result.rowcount
+            logger.info(f"Удалено чанков: {deleted_chunks}")
         except Exception as e:
-            logger.warning(f"Не удалось удалить файл {document.file_path}: {str(e)}")
+            logger.warning(f"Ошибка удаления чанков документа {document_id}: {str(e)}")
         
-        # Удаляем документ из базы данных (чанки удалятся автоматически через cascade)
-        db.delete(document)
-        db.commit()
+        # 2. Удаляем файл с диска
+        try:
+            file_path_obj = Path(file_path)
+            if file_path_obj.exists():
+                file_path_obj.unlink()
+                logger.info(f"Файл {file_path} удален с диска")
+            else:
+                logger.warning(f"Файл не найден: {file_path}")
+        except Exception as e:
+            logger.warning(f"Не удалось удалить файл {file_path}: {str(e)}")
         
-        logger.info(f"Документ {document_id} успешно удален")
-        
-        return RedirectResponse(url="/documents?success=deleted", status_code=303)
+        # 3. Удаляем документ напрямую через SQL
+        try:
+            doc_result = db.execute(text("DELETE FROM documents WHERE id = :doc_id"), {"doc_id": document_id})
+            if doc_result.rowcount > 0:
+                db.commit()
+                logger.info(f"Документ {document_id} успешно удален")
+                return RedirectResponse(url="/documents?success=deleted", status_code=303)
+            else:
+                logger.error(f"Не удалось удалить документ {document_id} из базы данных")
+                return templates.TemplateResponse("error.html", {
+                    "request": request,
+                    "error": "Ошибка удаления документа из базы данных"
+                })
+        except Exception as e:
+            logger.error(f"Ошибка удаления документа {document_id} из БД: {str(e)}")
+            db.rollback()
+            return templates.TemplateResponse("error.html", {
+                "request": request,
+                "error": "Ошибка удаления документа из базы данных"
+            })
                 
     except Exception as e:
         logger.error(f"Ошибка удаления документа {document_id}: {str(e)}")
+        db.rollback()
         return templates.TemplateResponse("error.html", {
             "request": request,
             "error": "Ошибка удаления документа"
