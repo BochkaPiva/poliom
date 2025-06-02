@@ -1,29 +1,29 @@
 #!/usr/bin/env python3
 """
-Обработка всех необработанных документов с улучшенным алгоритмом чанкинга
+Скрипт для пересоздания всех чанков с новыми параметрами
+Размер чанка: 1500 символов (вместо старых 1000)
+Перекрытие: 200 символов
 """
 
-import os
 import sys
+import os
 from pathlib import Path
 from datetime import datetime
-
-# Добавляем путь к services
-services_path = Path(__file__).parent.parent
-sys.path.append(str(services_path))
+from dotenv import load_dotenv
 
 # Загружаем переменные окружения
-from dotenv import load_dotenv
-load_dotenv('.env.local')
+load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
-from sqlalchemy.orm import sessionmaker
-from shared.models.database import engine
-from shared.models import Document, DocumentChunk
+# Добавляем путь к shared модулям
+sys.path.append(str(Path(__file__).parent.parent))
+sys.path.append(str(Path(__file__).parent.parent / "shared"))
+
+from shared.models.database import SessionLocal
+from shared.models.document import Document, DocumentChunk
 from shared.utils.document_processor import DocumentProcessor
 from shared.utils.embeddings import EmbeddingService
+from sqlalchemy import text
 
-# Создаем сессию базы данных
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def improved_split_into_chunks(text: str, chunk_size: int = 1500, overlap: int = 200) -> list[str]:
     """
@@ -113,63 +113,51 @@ def improved_split_into_chunks(text: str, chunk_size: int = 1500, overlap: int =
     
     return chunks
 
-def process_document_with_improved_chunking(document_id: int):
-    """Обрабатываем документ с улучшенным алгоритмом чанкинга"""
-    print(f"🔄 Обработка документа ID: {document_id}")
+
+def rechunk_document(document_id: int, chunk_size: int = 1500, overlap: int = 200):
+    """Пересоздаем чанки для одного документа"""
+    print(f"\n🔄 Пересоздание чанков для документа {document_id}...")
+    print(f"   📏 Размер чанка: {chunk_size} символов")
+    print(f"   🔗 Перекрытие: {overlap} символов")
     
     db = SessionLocal()
     try:
-        # Получаем документ из базы данных
+        # Получаем документ
         document = db.query(Document).filter(Document.id == document_id).first()
         if not document:
             print(f"❌ Документ {document_id} не найден")
             return False
         
         print(f"📄 Документ: {document.original_filename}")
-        print(f"📁 Путь: {document.file_path}")
-        print(f"📊 Текущий статус: {document.processing_status}")
         
-        # Проверяем, что файл существует
-        file_path = Path(document.file_path)
-        if not file_path.exists():
-            print(f"❌ Файл не найден: {document.file_path}")
-            return False
+        # Подсчитываем старые чанки
+        old_chunks_count = db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).count()
+        print(f"🗑️ Удаляем {old_chunks_count} старых чанков...")
         
-        print(f"✅ Файл найден: {file_path.stat().st_size} байт")
-        
-        # Обновляем статус на "processing"
-        document.processing_status = "processing"
-        document.updated_at = datetime.utcnow()
+        # Удаляем старые чанки
+        db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).delete()
         db.commit()
-        print("📊 Статус изменен на 'processing'")
-        
-        # Удаляем старые чанки если есть
-        old_chunks = db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).all()
-        if old_chunks:
-            print(f"🗑️ Удаляем {len(old_chunks)} старых чанков...")
-            for chunk in old_chunks:
-                db.delete(chunk)
-            db.commit()
         
         # Инициализируем процессор документов
-        print("🔧 Инициализируем процессор документов...")
         processor = DocumentProcessor()
         
         # Извлекаем текст из документа
         print("📖 Извлекаем текст из документа...")
         text_content = processor.extract_text(document.file_path)
         if not text_content or not text_content.strip():
-            raise Exception("Не удалось извлечь текст из документа")
+            print("❌ Не удалось извлечь текст из документа")
+            return False
         
-        print(f"✅ Текст извлечен: {len(text_content)} символов")
+        print(f"✅ Извлечено {len(text_content)} символов текста")
         
-        # Разбиваем текст на чанки с УЛУЧШЕННЫМ алгоритмом
-        print("✂️ Разбиваем текст на чанки (улучшенный алгоритм)...")
-        chunks = improved_split_into_chunks(text_content, chunk_size=1500, overlap=200)
+        # Разбиваем текст на чанки с новыми параметрами
+        print("✂️ Разбиваем текст на чанки...")
+        chunks = improved_split_into_chunks(text_content, chunk_size=chunk_size, overlap=overlap)
         if not chunks:
-            raise Exception("Не удалось разбить документ на чанки")
+            print("❌ Не удалось разбить документ на чанки")
+            return False
         
-        print(f"✅ Документ разбит на {len(chunks)} качественных чанков")
+        print(f"✅ Документ разбит на {len(chunks)} чанков")
         
         # Анализируем размеры чанков
         chunk_sizes = [len(chunk) for chunk in chunks]
@@ -185,9 +173,10 @@ def process_document_with_improved_chunking(document_id: int):
         # Создаем чанки в базе данных
         print("💾 Создаем чанки в базе данных...")
         created_chunks = []
+        
         for i, chunk_text in enumerate(chunks):
             try:
-                print(f"  📝 Обрабатываем чанк {i+1}/{len(chunks)}...")
+                print(f"  📝 Обрабатываем чанк {i+1}/{len(chunks)}...", end='\r')
                 
                 # Генерируем эмбеддинг для чанка
                 embedding = embedding_service.get_embedding(chunk_text)
@@ -211,130 +200,122 @@ def process_document_with_improved_chunking(document_id: int):
                     print(f"  💾 Сохранено {i+1} чанков...")
                 
             except Exception as e:
-                print(f"❌ Ошибка создания чанка {i}: {str(e)}")
+                print(f"\n❌ Ошибка создания чанка {i}: {str(e)}")
                 continue
         
-        if not created_chunks:
-            raise Exception("Не удалось создать ни одного чанка")
-        
-        # Финальное сохранение
-        print("💾 Финальное сохранение чанков...")
+        # Финальный коммит
         db.commit()
         
-        # Обновляем статус документа на "completed"
-        document.processing_status = "completed"
-        document.processed_at = datetime.utcnow()
-        document.updated_at = datetime.utcnow()
+        # Обновляем информацию о документе
         document.chunks_count = len(created_chunks)
+        document.updated_at = datetime.utcnow()
+        document.processing_status = "completed"
         db.commit()
         
-        print(f"🎉 Документ {document_id} успешно обработан!")
-        print(f"✅ Создано {len(created_chunks)} качественных чанков")
-        print(f"📊 Статус изменен на 'completed'")
+        print(f"\n✅ Документ {document_id} успешно обработан:")
+        print(f"   📊 Создано чанков: {len(created_chunks)}")
+        print(f"   📏 Средний размер: {sum(chunk_sizes) / len(chunk_sizes):.1f} символов")
+        print(f"   🔄 Изменение: {old_chunks_count} → {len(created_chunks)} чанков")
         
         return True
         
     except Exception as e:
         print(f"❌ Ошибка обработки документа {document_id}: {str(e)}")
-        
-        # Обновляем статус документа на "failed"
         try:
-            document = db.query(Document).filter(Document.id == document_id).first()
-            if document:
-                document.processing_status = "failed"
-                document.error_message = str(e)
-                document.updated_at = datetime.utcnow()
-                db.commit()
-                print("📊 Статус изменен на 'failed'")
-        except Exception as db_error:
-            print(f"❌ Ошибка обновления статуса: {str(db_error)}")
-        
+            db.rollback()
+        except:
+            pass
         return False
-        
     finally:
-        db.close()
+        try:
+            db.close()
+        except:
+            pass
 
-def list_pending_documents():
-    """Показываем все необработанные документы"""
-    print("📋 Поиск необработанных документов...")
+
+def rechunk_all_documents():
+    """Пересоздаем чанки для всех документов"""
+    print("🚀 МАССОВОЕ ПЕРЕСОЗДАНИЕ ЧАНКОВ")
+    print("=" * 60)
+    print(f"⏰ Время начала: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"📏 Новый размер чанков: 1500 символов")
+    print(f"🔗 Перекрытие: 200 символов")
+    print("=" * 60)
     
+    # Создаем отдельную сессию для получения списка документов
     db = SessionLocal()
     try:
-        # Ищем документы со статусом uploaded, pending или failed
-        pending_docs = db.query(Document).filter(
-            Document.processing_status.in_(['uploaded', 'pending', 'failed'])
-        ).all()
+        # Получаем все документы
+        documents = db.query(Document).all()
+        print(f"📄 Найдено документов: {len(documents)}")
         
-        if not pending_docs:
-            print("✅ Все документы уже обработаны")
-            return []
+        if not documents:
+            print("❌ Документы не найдены")
+            return
         
-        print(f"📄 Найдено необработанных документов: {len(pending_docs)}")
-        print()
+        # Показываем список документов
+        print("\n📋 Список документов:")
+        for doc in documents:
+            chunks_count = db.query(DocumentChunk).filter(DocumentChunk.document_id == doc.id).count()
+            print(f"   {doc.id}. {doc.original_filename} ({chunks_count} чанков)")
         
-        for doc in pending_docs:
-            print(f"📄 ID: {doc.id}")
-            print(f"   Файл: {doc.original_filename}")
-            print(f"   Статус: {doc.processing_status}")
-            print(f"   Загружен: {doc.created_at}")
-            if doc.error_message:
-                print(f"   Ошибка: {doc.error_message}")
-            print()
+        # Сохраняем список ID документов
+        document_ids = [doc.id for doc in documents]
         
-        return pending_docs
-        
+    except Exception as e:
+        print(f"❌ Ошибка получения списка документов: {str(e)}")
+        return
     finally:
         db.close()
-
-def main():
-    """Основная функция"""
-    print("🚀 Обработка необработанных документов с улучшенным алгоритмом\n")
     
-    # Показываем необработанные документы
-    pending_docs = list_pending_documents()
+    # Подтверждение
+    print(f"\n⚠️ ВНИМАНИЕ: Будут удалены ВСЕ существующие чанки и созданы новые!")
+    response = input("Продолжить? (да/нет): ").lower().strip()
     
-    if not pending_docs:
+    if response not in ['да', 'yes', 'y']:
+        print("❌ Операция отменена")
         return
     
-    print("🔄 Начинаем обработку...")
-    
+    # Обрабатываем каждый документ
     success_count = 0
-    error_count = 0
+    total_old_chunks = 0
+    total_new_chunks = 0
     
-    for doc in pending_docs:
-        print(f"\n{'='*60}")
-        print(f"Обрабатываем документ {doc.id}: {doc.original_filename}")
-        print('='*60)
+    for doc_id in document_ids:
+        # Подсчитываем старые чанки перед обработкой
+        db_temp = SessionLocal()
+        try:
+            old_chunks = db_temp.query(DocumentChunk).filter(DocumentChunk.document_id == doc_id).count()
+            total_old_chunks += old_chunks
+        except:
+            pass
+        finally:
+            db_temp.close()
         
-        success = process_document_with_improved_chunking(doc.id)
-        
-        if success:
+        # Обрабатываем документ
+        if rechunk_document(doc_id, chunk_size=1500, overlap=200):
             success_count += 1
-            print("✅ Документ успешно обработан")
-        else:
-            error_count += 1
-            print("❌ Ошибка обработки документа")
+            
+            # Подсчитываем новые чанки после обработки
+            db_temp = SessionLocal()
+            try:
+                new_chunks = db_temp.query(DocumentChunk).filter(DocumentChunk.document_id == doc_id).count()
+                total_new_chunks += new_chunks
+            except:
+                pass
+            finally:
+                db_temp.close()
     
-    print(f"\n🎉 Обработка завершена!")
-    print(f"✅ Успешно обработано: {success_count}")
-    print(f"❌ Ошибок: {error_count}")
-    
-    # Показываем финальную статистику
-    print(f"\n📊 Финальная статистика:")
-    db = SessionLocal()
-    try:
-        total_docs = db.query(Document).count()
-        completed_docs = db.query(Document).filter(Document.processing_status == 'completed').count()
-        failed_docs = db.query(Document).filter(Document.processing_status == 'failed').count()
-        pending_docs = db.query(Document).filter(Document.processing_status.in_(['uploaded', 'pending'])).count()
-        
-        print(f"📚 Всего документов: {total_docs}")
-        print(f"✅ Обработанных: {completed_docs}")
-        print(f"❌ С ошибками: {failed_docs}")
-        print(f"⏳ Ожидают обработки: {pending_docs}")
-        
-    finally:
-        db.close()
+    # Итоговая статистика
+    print("\n" + "=" * 60)
+    print("📊 ИТОГОВАЯ СТАТИСТИКА:")
+    print(f"   ✅ Успешно обработано: {success_count}/{len(document_ids)} документов")
+    print(f"   🔄 Чанков было: {total_old_chunks}")
+    print(f"   🔄 Чанков стало: {total_new_chunks}")
+    print(f"   📈 Изменение: {total_new_chunks - total_old_chunks:+d} чанков")
+    print(f"⏰ Время завершения: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 60)
+
 
 if __name__ == "__main__":
-    main() 
+    rechunk_all_documents() 

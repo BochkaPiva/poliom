@@ -61,8 +61,8 @@ class SimpleRAG:
         
         Args:
             question: Вопрос пользователя
-            limit: Максимальное количество чанков для возврата (уменьшено для лучшего качества)
-        
+            limit: Максимальное количество чанков для возврата
+            
         Returns:
             List[Dict]: Список релевантных чанков с метаданными
         """
@@ -71,7 +71,7 @@ class SimpleRAG:
             question_embedding = self.create_embedding(question)
             self.logger.info(f"Создан эмбеддинг для вопроса, размерность: {len(question_embedding)}")
             
-            # 2. Выполняем векторный поиск
+            # 2. Выполняем векторный поиск с высоким порогом качества
             self.logger.info("Пытаемся выполнить векторный поиск...")
             
             # Используем pgvector для поиска похожих эмбеддингов
@@ -83,19 +83,29 @@ class SimpleRAG:
                 JOIN documents d ON dc.document_id = d.id
                 WHERE d.processing_status = 'completed'
                   AND dc.embedding IS NOT NULL
-                  AND dc.content_length > 100
+                  AND dc.content_length > 200
+                  AND dc.content_length < 3000
+                  AND dc.content NOT ILIKE '%приложение%'
+                  AND dc.content NOT ILIKE '%утверждаю%'
+                  AND dc.content NOT ILIKE '%генеральный директор%'
+                  AND dc.content NOT ILIKE '%система менеджмента%'
+                  AND dc.content NOT ILIKE '%положение%о%'
+                  AND dc.content NOT ILIKE '%введено впервые%'
+                  AND dc.content NOT ILIKE '%дата введения%'
                 ORDER BY dc.embedding <=> :embedding
                 LIMIT :limit
             """)
             
             result = self.db_session.execute(query, {
                 'embedding': str(question_embedding),
-                'limit': limit * 3  # Берем больше для фильтрации
+                'limit': limit * 2
             })
             
             vector_chunks = []
             for row in result:
-                if row.similarity > 0.55:  # Повышаем порог схожести для лучшего качества
+                # Повышаем порог схожести и добавляем проверку качества контента
+                if (row.similarity > 0.65 and 
+                    self._is_relevant_content(row.content, question)):
                     vector_chunks.append({
                         'id': row.id,
                         'document_id': row.document_id,
@@ -106,35 +116,43 @@ class SimpleRAG:
                         'content_length': row.content_length
                     })
             
-            self.logger.info(f"Векторный поиск завершен, найдено {len(vector_chunks)} чанков")
+            self.logger.info(f"Векторный поиск завершен, найдено {len(vector_chunks)} качественных чанков")
             
-            # 3. Дополняем текстовым поиском только если векторный поиск дал мало результатов
+            # 3. Дополняем улучшенным текстовым поиском
             text_chunks = []
             
-            if len(vector_chunks) < limit // 2:  # Если найдено меньше половины от лимита
-                # Извлекаем ключевые слова из вопроса
+            if len(vector_chunks) < limit:
                 keywords = self._extract_keywords(question)
                 
                 if keywords:
                     self.logger.info(f"Выполняем текстовый поиск по ключевым словам: {keywords}")
                     
-                    # Строим запрос для текстового поиска
+                    # Улучшенный запрос для текстового поиска
                     conditions = []
                     params = {}
                     
-                    for i, keyword in enumerate(keywords):
+                    for i, keyword in enumerate(keywords[:5]):  # Ограничиваем количество ключевых слов
                         param_name = f'keyword_{i}'
                         conditions.append(f"dc.content ILIKE :{param_name}")
                         params[param_name] = f'%{keyword}%'
                     
                     text_query = text(f"""
-                        SELECT DISTINCT dc.id, dc.document_id, dc.chunk_index, dc.content,
-                               0.7 as similarity, dc.content_length
+                        SELECT dc.id, dc.document_id, dc.chunk_index, dc.content,
+                                0.6 as similarity, dc.content_length
                         FROM document_chunks dc
                         JOIN documents d ON dc.document_id = d.id
                         WHERE d.processing_status = 'completed'
-                          AND dc.content_length > 100
+                          AND dc.content_length > 200
+                          AND dc.content_length < 3000
+                          AND dc.content NOT ILIKE '%приложение%'
+                          AND dc.content NOT ILIKE '%утверждаю%'
+                          AND dc.content NOT ILIKE '%генеральный директор%'
+                          AND dc.content NOT ILIKE '%система менеджмента%'
+                          AND dc.content NOT ILIKE '%положение%о%'
+                          AND dc.content NOT ILIKE '%введено впервые%'
+                          AND dc.content NOT ILIKE '%дата введения%'
                           AND ({' OR '.join(conditions)})
+                        ORDER BY dc.content_length DESC
                         LIMIT :limit
                     """)
                     
@@ -142,17 +160,25 @@ class SimpleRAG:
                     text_result = self.db_session.execute(text_query, params)
                     
                     for row in text_result:
-                        # Проверяем, что этот чанк еще не найден векторным поиском
-                        if not any(chunk['id'] == row.id for chunk in vector_chunks):
-                            text_chunks.append({
-                                'id': row.id,
-                                'document_id': row.document_id,
-                                'chunk_index': row.chunk_index,
-                                'content': row.content,
-                                'similarity': row.similarity,
-                                'search_type': 'text',
-                                'content_length': row.content_length
-                            })
+                        # Проверяем, что этот чанк еще не найден и содержит релевантную информацию
+                        if (not any(chunk['id'] == row.id for chunk in vector_chunks) and
+                            self._is_relevant_content(row.content, question)):
+                            
+                            # Дополнительная проверка на пересечение ключевых слов
+                            content_words = set(row.content.lower().split())
+                            question_words = set(question.lower().split())
+                            overlap = len(content_words & question_words)
+                            
+                            if overlap >= 2:  # Минимум 2 общих слова
+                                text_chunks.append({
+                                    'id': row.id,
+                                    'document_id': row.document_id,
+                                    'chunk_index': row.chunk_index,
+                                    'content': row.content,
+                                    'similarity': 0.6 + (overlap * 0.05),  # Бонус за больше совпадений
+                                    'search_type': 'text',
+                                    'content_length': row.content_length
+                                })
                     
                     self.logger.info(f"Текстовый поиск завершен, найдено {len(text_chunks)} дополнительных чанков")
             
@@ -166,7 +192,7 @@ class SimpleRAG:
             final_chunks = all_chunks[:limit]
             
             if not final_chunks:
-                self.logger.info("Векторный и текстовый поиск не дали результатов, используем fallback")
+                self.logger.info("Улучшенный поиск не дал результатов, используем fallback")
                 return self._fallback_search(question, limit)
             
             return final_chunks
@@ -308,28 +334,44 @@ class SimpleRAG:
             self.logger.info(f"Обрабатываем вопрос: {question[:100]}...")
             
             # 1. Ищем релевантные документы
-            relevant_chunks = self.search_relevant_chunks(question)
+            relevant_chunks = self.search_relevant_chunks(question, limit=20)  # Увеличиваем лимит
             
             if not relevant_chunks:
                 return {
                     'answer': 'К сожалению, я не нашел информации по вашему вопросу в корпоративной базе знаний. Попробуйте переформулировать вопрос или обратитесь к HR-отделу.',
                     'sources': [],
+                    'chunks': [],
+                    'files': [],
                     'success': True,
                     'tokens_used': 0
                 }
             
-            # 2. Формируем контекст
-            context = self.format_context(relevant_chunks)
+            # 2. Улучшенное формирование контекста - берем лучшие чанки
+            top_chunks = relevant_chunks[:10]  # Ограничиваем до 10 лучших чанков
+            context = self.format_context(top_chunks)
             
             # ОТЛАДКА: Выводим контекст в лог
             self.logger.info(f"🔍 КОНТЕКСТ ДЛЯ LLM (длина: {len(context)} символов):")
             self.logger.info("="*80)
-            self.logger.info(context[:1000] + "..." if len(context) > 1000 else context)
+            self.logger.info(context[:2000] + "..." if len(context) > 2000 else context)
             self.logger.info("="*80)
             
-            # 3. Получаем ответ от LLM
+            # 3. Получаем ответ от LLM с улучшенным промптом
+            enhanced_prompt = f"""
+Вопрос: {question}
+
+Контекст: {context}
+
+Требования к ответу:
+1. Будь максимально точным и подробным
+2. Используй только информацию из предоставленного контекста
+3. Структурируй ответ с нумерованными списками где это уместно
+4. Если в контексте есть конкретные цифры, даты, суммы - обязательно укажи их
+5. Отвечай на русском языке
+"""
+            
             llm_response = self.llm_client.generate_answer(
-                context=context,
+                context=enhanced_prompt,
                 question=question
             )
             
@@ -337,16 +379,19 @@ class SimpleRAG:
                 return {
                     'answer': 'Извините, произошла ошибка при генерации ответа. Попробуйте позже.',
                     'sources': [],
+                    'chunks': [],
+                    'files': [],
                     'success': False,
                     'error': llm_response.error,
                     'tokens_used': 0
                 }
             
-            # 4. Формируем источники с дедупликацией
+            # 4. Формируем источники и файлы с дедупликацией
             sources = []
+            files = []
             seen_documents = set()
             
-            for chunk in relevant_chunks:
+            for chunk in top_chunks:
                 document = self.db_session.query(Document).filter(
                     Document.id == chunk['document_id']
                 ).first()
@@ -357,6 +402,18 @@ class SimpleRAG:
                         'chunk_index': chunk['chunk_index'],
                         'document_id': document.id
                     })
+                    
+                    # Добавляем полную информацию о файле для прикрепления
+                    files.append({
+                        'title': document.title,
+                        'file_path': document.file_path,  # Полный путь к файлу
+                        'document_id': document.id,
+                        'similarity': chunk['similarity'],
+                        'file_size': document.file_size,
+                        'file_type': document.file_type,
+                        'original_filename': document.original_filename
+                    })
+                    
                     seen_documents.add(document.title)
             
             # 5. Постобработка ответа для улучшения форматирования
@@ -365,13 +422,16 @@ class SimpleRAG:
             # 6. Логируем запрос (опционально)
             if user_id:
                 self._log_query(user_id, question, formatted_answer, len(relevant_chunks))
-
+            
             return {
                 'answer': formatted_answer,
                 'sources': sources,
+                'chunks': relevant_chunks,
+                'files': files[:5],  # Ограничиваем до 5 файлов
                 'success': True,
                 'tokens_used': llm_response.tokens_used,
-                'chunks_found': len(relevant_chunks)
+                'chunks_found': len(relevant_chunks),
+                'context_length': len(context)
             }
             
         except Exception as e:
@@ -379,6 +439,8 @@ class SimpleRAG:
             return {
                 'answer': 'Произошла техническая ошибка. Обратитесь к администратору.',
                 'sources': [],
+                'chunks': [],
+                'files': [],
                 'success': False,
                 'error': str(e),
                 'tokens_used': 0
@@ -394,28 +456,41 @@ class SimpleRAG:
         Returns:
             str: Обработанный ответ
         """
-        # Экранируем все специальные символы для Telegram MarkdownV2
-        # Список символов, которые нужно экранировать: _ * [ ] ( ) ~ ` > # + - = | { } . !
-        escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
-        
-        for char in escape_chars:
-            answer = answer.replace(char, f'\\{char}')
-        
         # Убираем лишние пробелы и переносы
         answer = answer.strip()
         
-        # Убираем возможные дублирующиеся фразы
+        # Нормализуем переносы строк - убираем одиночные переносы, оставляем двойные
         lines = answer.split('\n')
-        unique_lines = []
-        seen_lines = set()
+        cleaned_lines = []
         
         for line in lines:
-            line_clean = line.strip().lower()
-            if line_clean and line_clean not in seen_lines:
-                unique_lines.append(line)
-                seen_lines.add(line_clean)
+            line = line.strip()
+            if line:  # Добавляем только непустые строки
+                cleaned_lines.append(line)
         
-        return '\n'.join(unique_lines)
+        # Объединяем строки с одним переносом между ними
+        result = '\n'.join(cleaned_lines)
+        
+        # Убираем возможные дублирующиеся фразы
+        sentences = result.split('. ')
+        unique_sentences = []
+        seen_sentences = set()
+        
+        for sentence in sentences:
+            sentence_clean = sentence.strip().lower()
+            if sentence_clean and sentence_clean not in seen_sentences and len(sentence_clean) > 10:
+                unique_sentences.append(sentence.strip())
+                seen_sentences.add(sentence_clean)
+        
+        # Восстанавливаем точки в конце предложений
+        final_sentences = []
+        for i, sentence in enumerate(unique_sentences):
+            if not sentence.endswith('.') and not sentence.endswith(':') and not sentence.endswith(';'):
+                if i < len(unique_sentences) - 1:  # Не последнее предложение
+                    sentence += '.'
+            final_sentences.append(sentence)
+        
+        return '. '.join(final_sentences)
     
     def _log_query(self, user_id: int, question: str, answer: str, chunks_count: int):
         """Логирование запроса пользователя"""
@@ -450,4 +525,52 @@ class SimpleRAG:
             self.db_session.execute(text("SELECT 1"))
             return True
         except Exception:
+            return False
+
+    def _is_relevant_content(self, content: str, question: str) -> bool:
+        """Проверка релевантности контента к вопросу"""
+        content_lower = content.lower()
+        question_lower = question.lower()
+        
+        # Исключаем технические части документов
+        technical_markers = [
+            'приложение', 'утверждаю', 'генеральный директор', 
+            'система менеджмента', 'введено впервые', 'дата введения',
+            'область применения', 'настоящее положение направлено',
+            'акционерное общество', 'сибгазполимер'
+        ]
+        
+        # Если содержит много технических маркеров, исключаем
+        technical_count = sum(1 for marker in technical_markers if marker in content_lower)
+        if technical_count > 2:
+            return False
+        
+        # Проверяем наличие ключевых слов из вопроса
+        question_words = set(word for word in question_lower.split() if len(word) > 2)
+        content_words = set(content_lower.split())
+        
+        overlap = question_words & content_words
+        
+        # Минимум 2 общих слова или один точный ключевой термин
+        if len(overlap) >= 2:
+            return True
+            
+        # Проверяем точные ключевые термины
+        key_terms = {
+            'отпуск': ['отпуск', 'отпускные', 'отдых'],
+            'зарплата': ['зарплата', 'заработная плата', 'оплата труда'],
+            'выплаты': ['выплаты', 'выплата', 'начисления', 'премия'],
+            'юбилей': ['юбилей', 'юбилейные', 'годовщина'],
+            'больничный': ['больничный', 'нетрудоспособность'],
+            'командировка': ['командировка', 'служебная поездка'],
+            'увольнение': ['увольнение', 'расторжение договора']
+        }
+        
+        for term_group in key_terms.values():
+            question_has_term = any(term in question_lower for term in term_group)
+            content_has_term = any(term in content_lower for term in term_group)
+            
+            if question_has_term and content_has_term:
+                return True
+        
             return False 

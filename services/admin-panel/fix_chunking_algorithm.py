@@ -20,7 +20,7 @@ from shared.models.database import SessionLocal
 from shared.models.document import DocumentChunk, Document
 from shared.utils.embeddings import EmbeddingService
 
-def improved_split_into_chunks(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[str]:
+def improved_split_into_chunks(text: str, chunk_size: int = 1500, overlap: int = 200) -> list[str]:
     """
     ИСПРАВЛЕННЫЙ алгоритм разбиения текста на чанки
     """
@@ -221,7 +221,7 @@ def recreate_chunks_with_improved_algorithm(document_id: int = 1):
         
         # Создаем новые чанки с улучшенным алгоритмом
         print("✂️ Создаем новые чанки...")
-        new_chunks = improved_split_into_chunks(text_content, chunk_size=1000, overlap=200)
+        new_chunks = improved_split_into_chunks(text_content, chunk_size=1500, overlap=200)
         print(f"✅ Создано {len(new_chunks)} новых чанков")
         
         # Инициализируем сервис эмбеддингов

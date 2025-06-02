@@ -77,7 +77,7 @@ def process_document_with_improved_chunking(document_id: int):
         
         # Разбиваем текст на чанки с УЛУЧШЕННЫМ алгоритмом
         print("✂️ Разбиваем текст на чанки (улучшенный алгоритм)...")
-        chunks = processor.split_into_chunks(text_content, chunk_size=1000, overlap=200)
+        chunks = processor.split_into_chunks(text_content, chunk_size=1500, overlap=200)
         if not chunks:
             raise Exception("Не удалось разбить документ на чанки")
         

@@ -7,6 +7,9 @@ import sys
 import re
 from pathlib import Path
 from typing import Dict, Any
+import time
+import asyncio
+from datetime import timedelta
 
 # Добавляем пути к модулям
 project_root = Path(__file__).parent.parent.parent
@@ -15,7 +18,7 @@ sys.path.insert(0, str(project_root / "services" / "telegram-bot"))
 
 from aiogram import Dispatcher, types, F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 
 try:
@@ -39,10 +42,101 @@ logger = logging.getLogger(__name__)
 config = Config()
 rag_service = RAGService(config.GIGACHAT_API_KEY)
 
+# В начале файла добавляем временное хранилище для файлов
+files_storage = {}
+
+# Добавляем лимиты для безопасности
+USER_FILE_LIMITS = {}  # {user_id: {'count': 0, 'last_reset': timestamp}}
+MAX_FILES_PER_HOUR = 10  # Максимум файлов в час на пользователя
+
+def check_user_file_limit(user_id: int) -> bool:
+    """Проверка лимита скачивания файлов для пользователя"""
+    current_time = time.time()
+    
+    if user_id not in USER_FILE_LIMITS:
+        USER_FILE_LIMITS[user_id] = {'count': 0, 'last_reset': current_time}
+    
+    user_data = USER_FILE_LIMITS[user_id]
+    
+    # Сброс счетчика если прошел час
+    if current_time - user_data['last_reset'] > 3600:  # 1 час
+        user_data['count'] = 0
+        user_data['last_reset'] = current_time
+    
+    # Проверяем лимит ДО увеличения счетчика
+    if user_data['count'] >= MAX_FILES_PER_HOUR:
+        return False
+    
+    # Увеличиваем счетчик только если лимит не превышен
+    user_data['count'] += 1
+    return True
+
+def is_file_allowed_for_sharing(file_path: str, file_type: str) -> bool:
+    """Проверка, можно ли отправлять данный тип файла"""
+    # Проверяем, что file_path не пустой
+    if not file_path or not file_type:
+        return False
+    
+    # Разрешенные типы файлов
+    allowed_types = ['pdf', 'docx', 'doc', 'txt', 'xlsx', 'xls']
+    
+    # Запрещенные паттерны в названии файла
+    forbidden_patterns = [
+        'конфиденциально',
+        'секретно', 
+        'персональные_данные',
+        'зарплата_список',
+        'password'
+    ]
+    
+    file_path_lower = file_path.lower()
+    
+    # Проверяем тип файла
+    if file_type.lower() not in allowed_types:
+        return False
+    
+    # Проверяем запрещенные паттерны
+    for pattern in forbidden_patterns:
+        if pattern in file_path_lower:
+            return False
+    
+    return True
+
+async def log_file_download(user_id: int, file_path: str, file_title: str, success: bool):
+    """Логирование скачивания файлов"""
+    try:
+        from datetime import datetime
+        log_message = (
+            f"FILE_DOWNLOAD: user_id={user_id}, "
+            f"file='{file_title}', path='{file_path}', "
+            f"success={success}, timestamp={datetime.now().isoformat()}"
+        )
+        logger.info(log_message)
+        
+        # Здесь можно добавить запись в отдельную таблицу логов файлов
+        
+    except Exception as e:
+        logger.error(f"Ошибка логирования скачивания файла: {e}")
+
 router = Router()
 
+def cleanup_old_files():
+    """Очистка старых файлов из хранилища (старше 1 часа)"""
+    current_time = time.time()
+    keys_to_remove = []
+    
+    for key, data in files_storage.items():
+        if current_time - data.get('timestamp', 0) > 3600:  # 1 час
+            keys_to_remove.append(key)
+    
+    for key in keys_to_remove:
+        del files_storage[key]
+    
+    if keys_to_remove:
+        logger.info(f"Очищено {len(keys_to_remove)} устаревших записей файлов")
+
 def is_blocked_response(response: str) -> bool:
-    """Проверяет, заблокирован ли ответ GigaChat"""
+    """Проверка, заблокирован ли ответ от GigaChat"""
     blocked_phrases = [
         "Генеративные языковые модели не обладают собственным мнением",
         "разговоры на чувствительные темы могут быть ограничены",
@@ -66,113 +160,104 @@ def is_blocked_response(response: str) -> bool:
     
     return False
 
-def extract_key_information(context: str, question: str) -> str:
-    """Извлекает ключевую информацию из контекста для формирования ответа"""
+def extract_key_information(chunks: list, question: str) -> str:
+    """Извлечение ключевой информации из чанков когда GigaChat заблокирован"""
+    if not chunks:
+        return "Информация не найдена в корпоративной базе знаний."
     
-    # Для вопросов о зарплате всегда возвращаем стандартный ответ
-    question_lower = question.lower()
-    salary_keywords = ['зарплата', 'заработная', 'плата', 'выплата', 'получаю', 'когда', 'деньги', 'дата', 'срок', 'даты', 'выплат', 'расчет', 'расчеты']
-    if any(word in question_lower for word in salary_keywords):
-        return """💰 **Выплата заработной платы:**
-
-Согласно корпоративным документам:
-• Заработная плата выплачивается **два раза в месяц**
-• Установленными днями для расчетов с работниками являются **12-е** и **27-е** числа месяца
-• При совпадении с выходными/праздниками выплата производится накануне
-
-*Источники: Положение об оплате труда, Правила внутреннего трудового распорядка*"""
+    # Собираем релевантные фразы из чанков
+    key_info = []
+    question_words = set(question.lower().split())
     
-    # Разбиваем контекст на источники
-    sources = re.split(r'\[Источник \d+:', context)
-    
-    # Ключевые слова из вопроса для поиска релевантной информации
-    question_words = set(re.findall(r'\b\w+\b', question.lower()))
-    
-    # Удаляем стоп-слова
-    stop_words = {'в', 'на', 'с', 'по', 'для', 'от', 'до', 'из', 'к', 'о', 'об', 'и', 'или', 'а', 'но', 'что', 'как', 'когда', 'где', 'почему', 'какой', 'какая', 'какие', 'который', 'которая', 'которые', 'это', 'то', 'все', 'при', 'за', 'под', 'над', 'между', 'через', 'без', 'со', 'во', 'ко', 'ли', 'же', 'бы', 'только', 'уже', 'еще', 'даже', 'если', 'чтобы', 'хотя', 'пока', 'пусть', 'будто', 'словно'}
-    question_words = question_words - stop_words
-    
-    relevant_info = []
-    
-    for source in sources[1:]:  # Пропускаем первый пустой элемент
-        if not source.strip():
-            continue
-            
-        # Извлекаем название документа
-        doc_match = re.search(r'^([^\]]+)\]', source)
-        doc_name = doc_match.group(1) if doc_match else "Документ"
+    for chunk in chunks[:5]:  # Берем первые 5 наиболее релевантных чанков
+        content = chunk.get('content', '')
         
-        # Получаем текст источника
-        source_text = source.split(']', 1)[-1].strip()
-        
-        # Ищем релевантные предложения
-        sentences = re.split(r'[.!?]+', source_text)
-        
+        # Разбиваем на предложения
+        sentences = content.split('.')
         for sentence in sentences:
             sentence = sentence.strip()
-            if len(sentence) < 20:
+            if len(sentence) < 20:  # Пропускаем слишком короткие предложения
                 continue
                 
-            sentence_words = set(re.findall(r'\b\w+\b', sentence.lower()))
+            # Проверяем, содержит ли предложение ключевые слова из вопроса
+            sentence_words = set(sentence.lower().split())
+            overlap = question_words & sentence_words
             
-            # Проверяем пересечение с ключевыми словами вопроса
-            word_overlap = question_words & sentence_words
-            if not word_overlap:
-                continue
-            
-            # Дополнительная фильтрация по релевантности
-            relevance_score = len(word_overlap)
-            
-            # Штраф за слишком общие предложения
-            general_words = {'должность', 'критерии', 'оценка', 'результат', 'основа', 'следующий', 'определяется', 'уровень'}
-            if len(sentence_words & general_words) > 2:
-                relevance_score -= 3
-            
-            # Минимальный порог релевантности
-            if relevance_score >= 1:
-                relevant_info.append({
-                    'text': sentence,
-                    'source': doc_name,
-                    'relevance': relevance_score
-                })
+            if len(overlap) >= 1:  # Если есть пересечение слов
+                key_info.append(sentence.strip())
+                
+        if len(key_info) >= 3:  # Ограничиваем количество предложений
+            break
     
-    # Сортируем по релевантности
-    relevant_info.sort(key=lambda x: x['relevance'], reverse=True)
+    if not key_info:
+        return "По вашему вопросу найдены документы в корпоративной базе, но не удалось извлечь конкретную информацию. Рекомендую обратиться к HR-отделу для получения подробной консультации."
     
-    if not relevant_info:
-        return None
+    # Формируем ответ
+    result = "На основе корпоративных документов:\n\n"
+    for i, info in enumerate(key_info, 1):
+        result += f"{i}. {info}.\n"
     
-    # Формируем ответ в едином стиле
-    response_parts = []
+    result += "\n💡 Для получения более подробной информации обратитесь к HR-отделу."
     
-    # Берем наиболее релевантную информацию
-    main_info = relevant_info[0]['text']
-    main_source = relevant_info[0]['source']
-    
-    # Добавляем основную информацию
-    response_parts.append(main_info)
-    
-    # Добавляем дополнительную информацию если есть
-    if len(relevant_info) > 1:
-        for info in relevant_info[1:3]:  # Максимум 2 дополнительных пункта
-            if info['text'] != main_info:  # Избегаем дублирования
-                response_parts.append(f"\n{info['text']}")
-    
-    # Формируем финальный ответ в едином стиле
-    final_response = "\n".join(response_parts)
-    
-    # Добавляем источники в едином формате
-    used_sources = set([info['source'] for info in relevant_info[:3]])
-    sources_text = f"\n\n📚 **Источники:**\n"
-    for i, source in enumerate(sorted(used_sources), 1):
-        sources_text += f"{i}\\. {source}\n"
-    
-    return final_response + sources_text.rstrip()
+    return result
 
 def extract_specific_data_patterns(context: str, question: str) -> str:
     """НЕ извлекает случайные данные - возвращает None для всех случаев"""
     # Убираем извлечение случайных данных полностью
     return None
+
+def format_response_for_telegram(text: str) -> str:
+    """Форматирование ответа для улучшения читаемости в Telegram"""
+    if not text:
+        return text
+    
+    # 1. Убираем LaTeX формулы и заменяем их на читаемый текст
+    import re
+    
+    # Заменяем LaTeX формулы \[...\] на простой текст в рамках
+    latex_pattern = r'\\\[(.*?)\\\]'
+    def replace_latex(match):
+        formula = match.group(1)
+        # Очищаем от LaTeX команд
+        clean_formula = formula.replace('\\text{', '').replace('}', '').replace('\\times', ' × ').replace('\\', '')
+        return f"\n📋 `{clean_formula}`\n"
+    
+    text = re.sub(latex_pattern, replace_latex, text, flags=re.DOTALL)
+    
+    # 2. Исправляем нумерацию (убираем двойные точки)
+    text = re.sub(r'(\d+)\.\.\s+', r'\1. ', text)
+    
+    # 3. Улучшаем форматирование заголовков
+    text = re.sub(r'### (.+)', r'\n🔷 **\1**\n', text)
+    text = re.sub(r'## (.+)', r'\n🔸 **\1**\n', text)
+    
+    # 4. Улучшаем форматирование списков
+    # Заменяем длинные тире на обычные
+    text = re.sub(r'^[-—–]\s+', '• ', text, flags=re.MULTILINE)
+    
+    # 5. Исправляем множественные переносы строк
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    # 6. Убираем лишние пробелы в начале и конце строк
+    lines = text.split('\n')
+    cleaned_lines = [line.strip() for line in lines]
+    text = '\n'.join(cleaned_lines)
+    
+    # 7. Исправляем форматирование формул в тексте
+    text = re.sub(r'([А-Яа-я\s]+)=([А-Яа-я\s\d×\(\)\-\+\/]+)', r'**\1** = `\2`', text)
+    
+    # 8. Улучшаем читаемость длинных формул
+    if 'Размер премии' in text or 'базовое вознаграждение' in text:
+        # Разбиваем длинные формулы на части
+        text = text.replace(' × ', ' ×\n      ')
+        text = text.replace('Суммарное базовое вознаграждение с учетом времени отсутствия на работе', 
+                           'Суммарное базовое вознаграждение\n(с учетом времени отсутствия)')
+    
+    # 9. Добавляем разделители для лучшей читаемости
+    if '📚 **Источники:**' in text:
+        text = text.replace('📚 **Источники:**', '\n' + '─' * 30 + '\n📚 **Источники:**')
+    
+    return text.strip()
 
 def create_faq_keyboard():
     """Создание клавиатуры для FAQ на основе данных из БД"""
@@ -246,7 +331,6 @@ def create_section_keyboard(section_id: int):
 async def get_or_create_user_async(telegram_id: int, username: str = None, 
                                  first_name: str = None, last_name: str = None):
     """Асинхронная версия get_or_create_user"""
-    import asyncio
     loop = asyncio.get_event_loop()
     
     return await loop.run_in_executor(
@@ -262,7 +346,6 @@ async def log_user_query_async(user_id: int, query: str, response: str,
                               response_time: float = None, similarity_score: float = None,
                               documents_used: str = None):
     """Асинхронная версия log_user_query"""
-    import asyncio
     loop = asyncio.get_event_loop()
     
     return await loop.run_in_executor(
@@ -354,8 +437,6 @@ async def stats_handler(message: Message):
         )
         
         # Получаем статистику
-        import asyncio
-        from datetime import timedelta
         loop = asyncio.get_event_loop()
         stats = await loop.run_in_executor(
             None,
@@ -401,7 +482,6 @@ async def health_handler(message: Message):
         
         # Проверяем базу данных
         try:
-            import asyncio
             loop = asyncio.get_event_loop()
             db_health = await loop.run_in_executor(None, check_database_health)
             if db_health:
@@ -423,7 +503,6 @@ async def health_handler(message: Message):
         
         # Проверяем количество документов
         try:
-            import asyncio
             loop = asyncio.get_event_loop()
             docs_count = await loop.run_in_executor(None, get_documents_count)
             health_status.append(f"📄 Документов в базе: {docs_count}")
@@ -460,118 +539,155 @@ async def question_handler(message: Message):
         await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
         
         # Получаем ответ от RAG системы
-        result = await rag_service.get_answer(message.text, user_id=user.id)
+        result = await rag_service.answer_question(message.text, user_id=user.id)
         
         # Проверяем качество результата
         if not result or 'answer' not in result:
             response_text = "❌ Извините, не удалось обработать ваш запрос. Попробуйте переформулировать вопрос."
-        elif is_blocked_response(result['answer']):
-            response_text = "🚫 Извините, я не могу ответить на этот вопрос. Обратитесь к HR-отделу для получения подробной информации."
         else:
-            # Проверяем релевантность найденных чанков
+            # Логируем полученные данные для отладки
             chunks = result.get('chunks', [])
+            logger.info(f"Получено {len(chunks)} чанков от RAG системы")
+            
+            # Проверяем релевантность найденных чанков
             relevant_chunks = []
             
             if chunks:
-                # Фильтруем чанки по схожести
-                for chunk in chunks:
+                # Фильтруем чанки по схожести с более мягкими порогами
+                for i, chunk in enumerate(chunks):
                     similarity = chunk.get('similarity', 0)
-                    if similarity >= 0.55:  # Высокий порог релевантности
+                    logger.info(f"Чанк {i+1}: similarity={similarity}")
+                    
+                    if similarity >= 0.25:  # Еще больше снижен порог для отладки
                         relevant_chunks.append(chunk)
-                    elif similarity >= 0.45:  # Средний порог - проверяем содержание
+                        logger.info(f"Чанк {i+1} добавлен как релевантный (similarity={similarity})")
+                    else:
                         # Проверяем, содержит ли чанк ключевые слова из вопроса
                         question_words = set(message.text.lower().split())
                         chunk_words = set(chunk.get('content', '').lower().split())
                         
                         # Если есть пересечение ключевых слов, добавляем чанк
-                        if len(question_words & chunk_words) >= 2:
+                        overlap = question_words & chunk_words
+                        if len(overlap) >= 1:
                             relevant_chunks.append(chunk)
+                            logger.info(f"Чанк {i+1} добавлен по ключевым словам: {overlap}")
             
-            # Если нет релевантных чанков, сообщаем об этом
-            if not relevant_chunks:
-                response_text = """🔍 **Информация не найдена**
-
-К сожалению, я не смог найти релевантную информацию по вашему запросу в базе знаний.
-
-**Рекомендации:**
-• Попробуйте переформулировать вопрос
-• Используйте другие ключевые слова
-• Обратитесь к разделу FAQ
-• Свяжитесь с HR-отделом напрямую
-
-**Примеры вопросов:**
-• "Когда выплачивается зарплата?"
-• "Размер аванса"
-• "Документы для отпуска"
-• "График работы" """
-            else:
-                # Обрабатываем ответ как обычно
-                answer_text = result['answer']
-                
-                # Специальная обработка для вопросов о датах зарплаты
-                if any(word in message.text.lower() for word in ['зарплата', 'выплата', 'дата', 'когда', 'число']):
-                    if len(answer_text) < 100 or 'не найдено' in answer_text.lower():
-                        answer_text = """💰 **Выплата заработной платы**
-
-• Заработная плата выплачивается **два раза в месяц**
-• Установленными днями для расчетов с работниками являются **12-е** и **27-е** числа месяца
-• При совпадении с выходными/праздниками выплата производится накануне
-
-*Источники: Положение об оплате труда, Правила внутреннего трудового распорядка*"""
-                        logger.info("Заменен неполный ответ GigaChat на полный ответ с датами")
+            # Логируем итоговое количество релевантных чанков
+            logger.info(f"Итого релевантных чанков: {len(relevant_chunks)}")
+            logger.info(f"Ответ GigaChat заблокирован: {is_blocked_response(result['answer'])}")
+            
+            # Упрощенная логика обработки ответов
+            if len(relevant_chunks) > 0:
+                if is_blocked_response(result['answer']):
+                    logger.info("GigaChat заблокирован, извлекаем информацию из контекста")
+                    response_text = extract_key_information(relevant_chunks, message.text)
                 else:
-                    # Добавляем источники, если есть
+                    logger.info("Используем ответ GigaChat")
+                    response_text = result['answer']
+                    
+                    # Добавляем источники
                     if result.get('sources'):
-                        answer_text += "\n\n📚 **Источники:**"
-                        # Убираем дублирование источников
-                        unique_sources = []
-                        seen_titles = set()
-                        
-                        for source in result['sources'][:3]:  # Максимум 3 источника для лучшей читаемости
+                        response_text += "\n\n📚 **Источники:**"
+                        for j, source in enumerate(result['sources'], 1):
                             title = source.get('title', 'Документ')
-                            if title not in seen_titles and len(title) > 5:  # Фильтруем слишком короткие названия
-                                unique_sources.append(title)
-                                seen_titles.add(title)
-                        
-                        for i, title in enumerate(unique_sources, 1):
-                            # Простое форматирование без экранирования
-                            answer_text += f"\n{i}. {title}"
-                    
-                    # Добавляем информацию о качестве поиска
-                    if relevant_chunks:
-                        avg_similarity = sum(chunk.get('similarity', 0) for chunk in relevant_chunks) / len(relevant_chunks)
-                        if avg_similarity < 0.65:
-                            answer_text += f"\n\n💡 *Совет: Если ответ не полностью соответствует вашему вопросу, попробуйте переформулировать запрос*"
-                    
-                    response_text = answer_text
+                            if len(title) > 5:  # Исключаем слишком короткие названия
+                                response_text += f"\n{j}. {title}"
+            else:
+                logger.info("Нет релевантных чанков - возвращаем fallback ответ")
+                if result.get('answer') and not is_blocked_response(result['answer']):
+                    response_text = result['answer']
+                else:
+                    response_text = (
+                        "🔍 **Информация не найдена**\n\n"
+                        "К сожалению, по вашему вопросу не найдено релевантной информации в корпоративной базе знаний.\n\n"
+                        "**Рекомендации:**\n"
+                        "• Попробуйте переформулировать вопрос\n"
+                        "• Используйте другие ключевые слова\n"
+                        "• Обратитесь к HR-отделу для получения консультации\n\n"
+                        "📞 **Контакты HR-отдела:** [укажите контакты]"
+                    )
+        
+        # Применяем форматирование для улучшения читаемости
+        if response_text:
+            response_text = format_response_for_telegram(response_text)
         
         # Отправляем ответ
         try:
-            # Создаем клавиатуру с кнопкой "Назад"
-            back_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔙 Главное меню", callback_data="back_to_main")]
+            # Создаем клавиатуру с дополнительными кнопками
+            keyboard_buttons = []
+            
+            # Если есть файлы-источники, добавляем кнопку для их показа
+            files = result.get('files', []) if result else []
+            if files:
+                keyboard_buttons.append([
+                    InlineKeyboardButton(
+                        text=f"📎 Файлы-источники ({len(files)})", 
+                        callback_data=f"show_files_{message.message_id}"
+                    )
+                ])
+            
+            # Добавляем кнопку "Назад"
+            keyboard_buttons.append([
+                InlineKeyboardButton(text="🔙 Главное меню", callback_data="back_to_main")
             ])
             
-            # Пытаемся отправить с MarkdownV2, если не получается - отправляем как обычный текст
-            await message.answer(response_text, reply_markup=back_keyboard, parse_mode='MarkdownV2')
-        except:
+            back_keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+            
+            # Сохраняем информацию о файлах для последующего использования
+            if files:
+                # Очищаем старые файлы перед добавлением новых
+                cleanup_old_files()
+                
+                # Сохраняем файлы в временное хранилище с временной меткой
+                files_storage[str(message.message_id)] = {
+                    'files': files,
+                    'timestamp': time.time()
+                }
+                logger.info(f"Сохранены файлы для сообщения {message.message_id}: {[f['title'] for f in files]}")
+            
+            # Пытаемся отправить с разными форматами markdown
             try:
                 await message.answer(response_text, reply_markup=back_keyboard, parse_mode='Markdown')
             except:
-                await message.answer(response_text, reply_markup=back_keyboard)
+                try:
+                    # Убираем все markdown форматирование
+                    clean_text = response_text.replace('**', '').replace('*', '').replace('_', '').replace('`', '')
+                    await message.answer(clean_text, reply_markup=back_keyboard)
+                except:
+                    await message.answer("Ответ получен, но возникла ошибка форматирования.", reply_markup=back_keyboard)
+        
+        except Exception as send_error:
+            logger.error(f"Ошибка отправки сообщения: {send_error}")
+            # Fallback - отправляем простое сообщение
+            try:
+                simple_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🔙 Главное меню", callback_data="back_to_main")]
+                ])
+                await message.answer("Ответ готов, но возникла техническая ошибка при отправке.", reply_markup=simple_keyboard)
+            except:
+                await message.answer("Техническая ошибка. Попробуйте переформулировать вопрос.")
         
         # Логируем запрос
-        await log_user_query_async(
-            user_id=user.id,
-            query=message.text,
-            response=response_text
-        )
+        try:
+            await log_user_query_async(
+                user_id=user.id,
+                query=message.text,
+                response=response_text[:1000]  # Ограничиваем длину для логирования
+            )
+        except Exception as log_error:
+            logger.error(f"Ошибка логирования: {log_error}")
         
     except Exception as e:
         logger.error(f"Ошибка в question_handler: {e}")
-        await message.answer(
-            "❌ Произошла ошибка при обработке вашего запроса. Попробуйте позже."
-        )
+        try:
+            await message.answer(
+                "❌ Произошла ошибка при обработке вашего запроса. Попробуйте позже.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🔙 Главное меню", callback_data="back_to_main")]
+                ])
+            )
+        except:
+            await message.answer("❌ Техническая ошибка.")
 
 @router.callback_query(F.data == "show_faq")
 async def show_faq_callback(callback: CallbackQuery):
@@ -596,8 +712,6 @@ async def show_stats_callback(callback: CallbackQuery):
         )
         
         # Получаем статистику
-        import asyncio
-        from datetime import timedelta
         loop = asyncio.get_event_loop()
         stats = await loop.run_in_executor(
             None,
@@ -649,7 +763,6 @@ async def show_health_callback(callback: CallbackQuery):
         
         # Проверяем базу данных
         try:
-            import asyncio
             loop = asyncio.get_event_loop()
             db_health = await loop.run_in_executor(None, check_database_health)
             if db_health:
@@ -671,7 +784,6 @@ async def show_health_callback(callback: CallbackQuery):
         
         # Проверяем количество документов
         try:
-            import asyncio
             loop = asyncio.get_event_loop()
             docs_count = await loop.run_in_executor(None, get_documents_count)
             health_status.append(f"📄 Документов в базе: {docs_count}")
@@ -841,6 +953,204 @@ async def old_faq_callback(callback: CallbackQuery):
     """Обработчик старых FAQ callback (для совместимости)"""
     # Перенаправляем на новое FAQ меню
     await show_faq_callback(callback)
+
+@router.callback_query(F.data.startswith("show_files_"))
+async def show_files_callback(callback: CallbackQuery):
+    """
+    Обработчик кнопки "Файлы-источники" - теперь отправляет файлы напрямую пользователю
+    с проверками безопасности и лимитами
+    """
+    try:
+        message_id = callback.data.split("_")[-1]
+        
+        # Проверяем лимит пользователя
+        if not check_user_file_limit(callback.from_user.id):
+            # Создаем клавиатуру для возврата при превышении лимита
+            limit_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔍 Задать новый вопрос", callback_data="smart_search")],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")]
+            ])
+            
+            await callback.message.answer(
+                "⏰ **Превышен лимит скачивания файлов**\n\n"
+                f"Максимум {MAX_FILES_PER_HOUR} файлов в час. "
+                "Попробуйте позже.",
+                reply_markup=limit_keyboard,
+                parse_mode='Markdown'
+            )
+            await callback.answer()
+            return
+        
+        # Правильно извлекаем файлы из storage
+        storage_data = files_storage.get(message_id, {})
+        files = storage_data.get('files', []) if isinstance(storage_data, dict) else []
+        
+        if not files:
+            # Создаем клавиатуру для возврата когда файлы недоступны
+            no_files_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔍 Задать новый вопрос", callback_data="smart_search")],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")]
+            ])
+            
+            await callback.message.answer(
+                "📁 **Файлы недоступны**\n\n"
+                "Файлы для этого ответа больше не доступны. "
+                "Возможно, истекло время хранения.",
+                reply_markup=no_files_keyboard,
+                parse_mode='Markdown'
+            )
+            await callback.answer()
+            return
+        
+        # Отправляем информацию о файлах
+        files_info = "📎 **Файлы-источники для вашего запроса:**\n\n"
+        for i, file_info in enumerate(files, 1):
+            title = file_info.get('title', 'Без названия')
+            similarity = file_info.get('similarity', 0)
+            # Конвертируем similarity в проценты если это десятичная дробь
+            relevance = int(similarity * 100) if similarity <= 1.0 else int(similarity)
+            files_info += f"{i}. **{title}** (релевантность: {relevance}%)\n"
+        
+        files_info += f"\n📤 Отправляю {len(files)} файл(ов)...\n"
+        await callback.message.answer(files_info, parse_mode='Markdown')
+        
+        # Отправляем файлы
+        sent_count = 0
+        failed_count = 0
+        
+        for i, file_info in enumerate(files, 1):
+            try:
+                title = file_info.get('title', 'Без названия')
+                file_path = file_info.get('file_path', '')
+                file_type = file_info.get('file_type', '')
+                original_filename = file_info.get('original_filename', 'document')
+                
+                if not file_path:
+                    await callback.message.answer(f"❌ {i}. **{title}**\nПуть к файлу не указан")
+                    await log_file_download(callback.from_user.id, '', title, False)
+                    failed_count += 1
+                    continue
+                
+                # Проверяем, разрешен ли файл для отправки
+                if not is_file_allowed_for_sharing(file_path, file_type):
+                    await callback.message.answer(
+                        f"🔒 {i}. **{title}**\n"
+                        "Файл недоступен для отправки по соображениям безопасности"
+                    )
+                    await log_file_download(callback.from_user.id, file_path, title, False)
+                    failed_count += 1
+                    continue
+                
+                # Проверяем существование файла
+                file_path_obj = Path(file_path)
+                if not file_path_obj.exists():
+                    await callback.message.answer(f"❌ {i}. **{title}**\nФайл не найден на диске: {file_path_obj.name}")
+                    await log_file_download(callback.from_user.id, file_path, title, False)
+                    failed_count += 1
+                    continue
+                
+                # Проверяем размер файла (Telegram лимит 50MB)
+                file_size = file_path_obj.stat().st_size
+                if file_size > 50 * 1024 * 1024:  # 50MB в байтах
+                    size_mb = file_size / (1024 * 1024)
+                    await callback.message.answer(
+                        f"📊 {i}. **{title}**\n"
+                        f"Файл слишком большой для отправки ({size_mb:.1f} MB > 50 MB)\n"
+                        f"📁 Файл: `{file_path_obj.name}`"
+                    )
+                    await log_file_download(callback.from_user.id, file_path, title, False)
+                    failed_count += 1
+                    continue
+                
+                # Отправляем файл
+                try:
+                    # Определяем имя файла для отправки
+                    send_filename = original_filename if original_filename else file_path_obj.name
+                    if not send_filename.lower().endswith(f'.{file_type.lower()}'):
+                        send_filename += f'.{file_type.lower()}'
+                    
+                    file_input = FSInputFile(
+                        path=str(file_path_obj),
+                        filename=send_filename
+                    )
+                    
+                    similarity = file_info.get('similarity', 0)
+                    # Конвертируем similarity в проценты если это десятичная дробь
+                    relevance = int(similarity * 100) if similarity <= 1.0 else int(similarity)
+                    caption = f"📄 **{title}**\n📊 Релевантность: {relevance}%"
+                    
+                    await callback.message.answer_document(
+                        document=file_input,
+                        caption=caption,
+                        parse_mode='Markdown'
+                    )
+                    
+                    logger.info(f"Файл успешно отправлен пользователю {callback.from_user.id}: {title}")
+                    await log_file_download(callback.from_user.id, file_path, title, True)
+                    sent_count += 1
+                    
+                    # Небольшая задержка между отправками
+                    await asyncio.sleep(0.5)
+                    
+                except Exception as send_error:
+                    logger.error(f"Ошибка отправки файла {title}: {send_error}")
+                    await callback.message.answer(f"❌ {i}. **{title}**\nОшибка при отправке файла")
+                    await log_file_download(callback.from_user.id, file_path, title, False)
+                    failed_count += 1
+                    
+            except Exception as file_error:
+                logger.error(f"Ошибка обработки файла {i}: {file_error}")
+                await callback.message.answer(f"❌ {i}. Ошибка обработки файла")
+                failed_count += 1
+        
+        # Создаем клавиатуру для навигации после отправки файлов
+        navigation_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔍 Задать новый вопрос", callback_data="smart_search")],
+            [InlineKeyboardButton(text="📚 FAQ", callback_data="show_faq"),
+             InlineKeyboardButton(text="📊 Статистика", callback_data="show_stats")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")]
+        ])
+        
+        # Итоговое сообщение с клавиатурой
+        if sent_count > 0:
+            summary = f"✅ **Отправлено файлов: {sent_count}**"
+            if failed_count > 0:
+                summary += f"\n❌ Не удалось отправить: {failed_count}"
+            summary += "\n\n💡 **Что дальше?**\nВыберите действие из меню ниже:"
+        else:
+            summary = "❌ **Не удалось отправить ни одного файла**"
+            if failed_count > 0:
+                summary += f"\nОшибок: {failed_count}"
+            summary += "\n\n🔄 **Попробуйте:**\n• Задать вопрос по-другому\n• Обратиться к FAQ\n• Связаться с HR-отделом"
+        
+        await callback.message.answer(
+            summary, 
+            reply_markup=navigation_keyboard,
+            parse_mode='Markdown'
+        )
+        
+        # Очищаем файлы из хранилища после отправки
+        if message_id in files_storage:
+            del files_storage[message_id]
+        
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Ошибка в show_files_callback: {e}")
+        
+        # Создаем клавиатуру для навигации при ошибке
+        error_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔍 Задать новый вопрос", callback_data="smart_search")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")]
+        ])
+        
+        await callback.message.answer(
+            "❌ **Произошла ошибка при обработке файлов**\n\n"
+            "Попробуйте задать вопрос заново или воспользуйтесь другими функциями бота.",
+            reply_markup=error_keyboard,
+            parse_mode='Markdown'
+        )
+        await callback.answer()
 
 def register_handlers(dp: Dispatcher):
     """

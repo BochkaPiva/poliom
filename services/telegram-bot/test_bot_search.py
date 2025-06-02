@@ -75,7 +75,7 @@ async def test_rag_service():
                     
                     if result.get('sources'):
                         print("📖 Источники:")
-                        for j, source in enumerate(result['sources'][:3], 1):
+                        for j, source in enumerate(result['sources'], 1):
                             print(f"   {j}. {source.get('title', 'Неизвестно')}")
                 else:
                     print(f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}")

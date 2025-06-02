@@ -47,7 +47,7 @@ class DocumentProcessorUnified:
         self.document_processor = DocumentProcessor()
         self.embedding_service = EmbeddingService()
     
-    def improved_split_into_chunks(self, text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
+    def improved_split_into_chunks(self, text: str, chunk_size: int = 1500, overlap: int = 200) -> List[str]:
         """
         УЛУЧШЕННЫЙ алгоритм разбиения текста на чанки
         Учитывает границы предложений и создает качественные чанки
@@ -225,7 +225,7 @@ class DocumentProcessorUnified:
             
             # Разбиваем текст на чанки с УЛУЧШЕННЫМ алгоритмом
             logger.info("Разбиваем текст на чанки (улучшенный алгоритм)...")
-            chunks = self.improved_split_into_chunks(text_content, chunk_size=1000, overlap=200)
+            chunks = self.improved_split_into_chunks(text_content, chunk_size=1500, overlap=200)
             if not chunks:
                 raise Exception("Не удалось разбить документ на чанки")
             

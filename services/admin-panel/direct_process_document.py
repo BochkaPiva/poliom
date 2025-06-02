@@ -25,7 +25,7 @@ from shared.utils.embeddings import EmbeddingService
 # Создаем сессию базы данных
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-def improved_split_into_chunks(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[str]:
+def improved_split_into_chunks(text: str, chunk_size: int = 1500, overlap: int = 200) -> list[str]:
     """
     УЛУЧШЕННЫЙ алгоритм разбиения текста на чанки
     Учитывает границы предложений и создает качественные чанки
@@ -157,7 +157,7 @@ def process_document_directly(document_id: int):
         
         # Разбиваем текст на чанки с УЛУЧШЕННЫМ алгоритмом
         print("✂️ Разбиваем текст на чанки (улучшенный алгоритм)...")
-        chunks = improved_split_into_chunks(text_content, chunk_size=1000, overlap=200)
+        chunks = improved_split_into_chunks(text_content, chunk_size=1500, overlap=200)
         if not chunks:
             raise Exception("Не удалось разбить документ на чанки")
         
