@@ -28,78 +28,120 @@ class SimpleRAG:
     
     def __init__(self, db_session: Session, gigachat_api_key: str):
         """
-        Инициализация простой RAG системы
+        Инициализация RAG системы
         
         Args:
             db_session: Сессия базы данных
             gigachat_api_key: API ключ для GigaChat
         """
-        self.db = db_session
+        self.db_session = db_session
         self.llm_client = SimpleLLMClient(gigachat_api_key)
+        self.similarity_threshold = 0.5  # Порог схожести для векторного поиска
         
-        # Загружаем локальную модель эмбеддингов (один раз)
-        logger.info("Загружаем модель эмбеддингов...")
-        self.embeddings_model = SentenceTransformer('ai-forever/sbert_large_nlu_ru')
-        logger.info("Модель эмбеддингов загружена!")
+        # Инициализируем логгер
+        self.logger = logging.getLogger(__name__)
+        
+        # Загружаем модель эмбеддингов
+        self.logger.info("Загружаем модель эмбеддингов...")
+        self.embedding_model = SentenceTransformer('cointegrated/rubert-tiny2')
+        self.logger.info("Модель эмбеддингов загружена!")
         
     def create_embedding(self, text: str) -> List[float]:
         """Создание эмбеддинга для текста"""
         try:
-            embedding = self.embeddings_model.encode(text)
+            embedding = self.embedding_model.encode([text])[0]
             return embedding.tolist()
         except Exception as e:
-            logger.error(f"Ошибка создания эмбеддинга: {str(e)}")
+            self.logger.error(f"Ошибка создания эмбеддинга: {e}")
             return []
     
-    def search_relevant_chunks(self, 
-                              question: str, 
-                              limit: int = 5,
-                              similarity_threshold: float = 0.7) -> List[DocumentChunk]:
-        """
-        Поиск релевантных чанков документов
-        
-        Args:
-            question: Вопрос пользователя
-            limit: Максимальное количество чанков
-            similarity_threshold: Порог схожести
-            
-        Returns:
-            List[DocumentChunk]: Список релевантных чанков
-        """
+    def search_relevant_chunks(self, question: str, limit: int = 5) -> List[Dict]:
+        """Поиск релевантных чанков для вопроса"""
         try:
+            self.logger.info(f"Обрабатываем вопрос: {question}...")
+            
             # Создаем эмбеддинг для вопроса
             question_embedding = self.create_embedding(question)
-            if not question_embedding:
-                return []
+            self.logger.info(f"Создан эмбеддинг для вопроса, размерность: {len(question_embedding)}")
             
-            # Поиск похожих чанков через pgvector
-            query = text("""
-                SELECT id, document_id, content, chunk_index, 
-                       1 - (embedding <=> :question_embedding) as similarity
-                FROM document_chunks 
-                WHERE 1 - (embedding <=> :question_embedding) > :threshold
-                ORDER BY embedding <=> :question_embedding
+            # Пытаемся выполнить векторный поиск
+            try:
+                self.logger.info("Пытаемся выполнить векторный поиск...")
+                
+                # Используем прямой SQL без параметров для vector
+                embedding_str = '[' + ','.join(map(str, question_embedding)) + ']'
+                
+                vector_query = text(f"""
+                    SELECT id, document_id, content, chunk_index,
+                           1 - (embedding <=> '{embedding_str}'::vector) as similarity
+                    FROM document_chunks
+                    WHERE 1 - (embedding <=> '{embedding_str}'::vector) > :threshold
+                    ORDER BY embedding <=> '{embedding_str}'::vector
+                    LIMIT :limit
+                """)
+                
+                result = self.db_session.execute(
+                    vector_query,
+                    {
+                        'threshold': self.similarity_threshold,
+                        'limit': limit
+                    }
+                )
+                
+                chunks = []
+                for row in result:
+                    chunks.append({
+                        'id': row.id,
+                        'document_id': row.document_id,
+                        'content': row.content,
+                        'chunk_index': row.chunk_index,
+                        'similarity': float(row.similarity)
+                    })
+                
+                if chunks:
+                    self.logger.info(f"Векторный поиск завершен, найдено {len(chunks)} чанков")
+                    return chunks
+                else:
+                    self.logger.info("Векторный поиск не дал результатов, переходим к текстовому поиску")
+                    
+            except Exception as e:
+                self.logger.warning(f"Векторный поиск не удался: {e}, переходим к текстовому поиску")
+                self.db_session.rollback()
+            
+            # Fallback к текстовому поиску
+            self.logger.info("Используем текстовый поиск как fallback")
+            
+            # Простой текстовый поиск по содержимому
+            text_query = text("""
+                SELECT id, document_id, content, chunk_index
+                FROM document_chunks
+                WHERE content ILIKE :search_pattern
+                ORDER BY char_length(content)
                 LIMIT :limit
             """)
             
-            result = self.db.execute(query, {
-                'question_embedding': question_embedding,
-                'threshold': similarity_threshold,
-                'limit': limit
-            })
+            search_pattern = f"%{question}%"
+            result = self.db_session.execute(
+                text_query,
+                {'search_pattern': search_pattern, 'limit': limit}
+            )
             
-            chunk_ids = [row[0] for row in result]
+            chunks = []
+            for row in result:
+                chunks.append({
+                    'id': row.id,
+                    'document_id': row.document_id,
+                    'content': row.content,
+                    'chunk_index': row.chunk_index,
+                    'similarity': 0.5  # Фиксированная схожесть для текстового поиска
+                })
             
-            # Получаем полные объекты чанков
-            chunks = self.db.query(DocumentChunk).filter(
-                DocumentChunk.id.in_(chunk_ids)
-            ).all()
-            
-            logger.info(f"Найдено {len(chunks)} релевантных чанков для вопроса: {question[:50]}...")
+            self.logger.info(f"Текстовый поиск завершен, найдено {len(chunks)} чанков")
             return chunks
             
         except Exception as e:
-            logger.error(f"Ошибка поиска чанков: {str(e)}")
+            self.logger.error(f"Ошибка при поиске чанков: {e}")
+            self.db_session.rollback()
             return []
     
     def format_context(self, chunks: List[DocumentChunk]) -> str:
@@ -110,14 +152,14 @@ class SimpleRAG:
         context_parts = []
         for i, chunk in enumerate(chunks, 1):
             # Получаем название документа
-            document = self.db.query(Document).filter(
-                Document.id == chunk.document_id
+            document = self.db_session.query(Document).filter(
+                Document.id == chunk['document_id']
             ).first()
             
             doc_title = document.title if document else "Неизвестный документ"
             
             context_parts.append(
-                f"[Источник {i}: {doc_title}]\n{chunk.content}\n"
+                f"[Источник {i}: {doc_title}]\n{chunk['content']}\n"
             )
         
         return "\n".join(context_parts)
@@ -136,7 +178,7 @@ class SimpleRAG:
             Dict с ответом и метаданными
         """
         try:
-            logger.info(f"Обрабатываем вопрос: {question[:100]}...")
+            self.logger.info(f"Обрабатываем вопрос: {question[:100]}...")
             
             # 1. Ищем релевантные документы
             relevant_chunks = self.search_relevant_chunks(question)
@@ -170,14 +212,14 @@ class SimpleRAG:
             # 4. Формируем источники
             sources = []
             for chunk in relevant_chunks:
-                document = self.db.query(Document).filter(
-                    Document.id == chunk.document_id
+                document = self.db_session.query(Document).filter(
+                    Document.id == chunk['document_id']
                 ).first()
                 
                 if document:
                     sources.append({
                         'title': document.title,
-                        'chunk_index': chunk.chunk_index,
+                        'chunk_index': chunk['chunk_index'],
                         'document_id': document.id
                     })
             
@@ -194,7 +236,7 @@ class SimpleRAG:
             }
             
         except Exception as e:
-            logger.error(f"Ошибка в answer_question: {str(e)}")
+            self.logger.error(f"Ошибка в answer_question: {str(e)}")
             return {
                 'answer': 'Произошла техническая ошибка. Обратитесь к администратору.',
                 'sources': [],
@@ -216,16 +258,16 @@ class SimpleRAG:
                 model_used="GigaChat"
             )
             
-            self.db.add(log_entry)
-            self.db.commit()
+            self.db_session.add(log_entry)
+            self.db_session.commit()
             
         except Exception as e:
-            logger.error(f"Ошибка логирования запроса: {str(e)}")
+            self.logger.error(f"Ошибка логирования запроса: {str(e)}")
     
     def health_check(self) -> Dict[str, bool]:
         """Проверка работоспособности всех компонентов"""
         return {
-            'embeddings_model': self.embeddings_model is not None,
+            'embeddings_model': self.embedding_model is not None,
             'llm_client': self.llm_client.health_check(),
             'database': self._check_database()
         }
@@ -233,7 +275,7 @@ class SimpleRAG:
     def _check_database(self) -> bool:
         """Проверка подключения к базе данных"""
         try:
-            self.db.execute(text("SELECT 1"))
+            self.db_session.execute(text("SELECT 1"))
             return True
         except Exception:
             return False 
