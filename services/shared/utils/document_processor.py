@@ -122,7 +122,7 @@ class DocumentProcessor:
             logger.error(f"Ошибка чтения TXT файла {file_path}: {str(e)}")
             raise
     
-    def split_into_chunks(self, text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
+    def split_into_chunks(self, text: str, chunk_size: int = 1500, overlap: int = 200) -> List[str]:
         """
         УЛУЧШЕННЫЙ алгоритм разбиения текста на чанки
         Учитывает границы предложений и создает качественные чанки

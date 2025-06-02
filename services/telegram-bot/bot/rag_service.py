@@ -216,28 +216,19 @@ class RAGService:
                 limit
             )
             
-            # Группируем чанки по документам
-            documents = {}
+            # Возвращаем чанки в правильном формате
+            formatted_chunks = []
             for chunk in chunks:
-                doc_id = chunk.document_id
-                if doc_id not in documents:
-                    # Получаем информацию о документе
-                    doc_info = await self._get_document_info(doc_id)
-                    if doc_info:
-                        documents[doc_id] = {
-                            'title': doc_info['title'],
-                            'chunks': []
-                        }
-                
-                if doc_id in documents:
-                    documents[doc_id]['chunks'].append({
-                        'content': chunk.content[:200] + "..." if len(chunk.content) > 200 else chunk.content,
-                        'chunk_index': chunk.chunk_index
-                    })
+                formatted_chunks.append({
+                    'document_id': chunk['document_id'],
+                    'content': chunk['content'],
+                    'chunk_index': chunk['chunk_index'],
+                    'similarity': chunk.get('similarity', 0.0)
+                })
             
             return {
                 'success': True,
-                'documents': list(documents.values()),
+                'chunks': formatted_chunks,
                 'total_found': len(chunks)
             }
             
@@ -245,7 +236,7 @@ class RAGService:
             logger.error(f"Ошибка поиска документов: {e}")
             return {
                 'success': False,
-                'documents': [],
+                'chunks': [],
                 'total_found': 0,
                 'error': str(e)
             }
@@ -360,4 +351,46 @@ class RAGService:
                 'success': False,
                 'questions': [],
                 'error': str(e)
-            } 
+            }
+
+    async def search_relevant_chunks(self, query: str, limit: int = 10) -> list:
+        """
+        Поиск релевантных чанков с информацией о документах
+        
+        Args:
+            query: Поисковый запрос
+            limit: Максимальное количество результатов
+            
+        Returns:
+            List с чанками и информацией о документах
+        """
+        if not self.initialized:
+            await self.initialize()
+        
+        try:
+            loop = asyncio.get_event_loop()
+            chunks = await loop.run_in_executor(
+                None,
+                self.rag_system.search_relevant_chunks,
+                query,
+                limit
+            )
+            
+            # Обогащаем чанки информацией о документах
+            enriched_chunks = []
+            for chunk in chunks:
+                doc_info = await self._get_document_info(chunk['document_id'])
+                enriched_chunk = {
+                    'document_id': chunk['document_id'],
+                    'document_title': doc_info['title'] if doc_info else 'Неизвестный документ',
+                    'content': chunk['content'],
+                    'chunk_index': chunk['chunk_index'],
+                    'similarity': chunk.get('similarity', 0.0)
+                }
+                enriched_chunks.append(enriched_chunk)
+            
+            return enriched_chunks
+            
+        except Exception as e:
+            logger.error(f"Ошибка поиска релевантных чанков: {e}")
+            return [] 

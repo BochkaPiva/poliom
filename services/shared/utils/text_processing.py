@@ -10,7 +10,7 @@ from docx import Document as DocxDocument
 logger = logging.getLogger(__name__)
 
 # Настройки чанкирования
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "800"))
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1500"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))
 
 
