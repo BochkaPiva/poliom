@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  postgres-pgvector:
+    image: pgvector/pgvector:pg16
+    container_name: poliom-postgres-pgvector
+    environment:
+      POSTGRES_DB: poliom
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5433:5432"  # Используем другой порт чтобы не конфликтовать с существующим PostgreSQL
+    volumes:
+      - pgvector_data:/var/lib/postgresql/data
+      - ./services/shared/sql:/docker-entrypoint-initdb.d
+    networks:
+      - poliom-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d poliom"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgvector_data:
+
+networks:
+  poliom-network:
+    driver: bridge 
