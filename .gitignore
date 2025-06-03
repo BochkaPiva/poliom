@@ -1,3 +1,115 @@
+# ===========================================
+# PRODUCTION .gitignore для POLIOM HR Assistant
+# ===========================================
+
+# ===== ДОКУМЕНТАЦИЯ И MD ФАЙЛЫ =====
+*.md
+!README.md
+# Исключаем все .md файлы кроме основного README
+
+# ===== ТЕСТОВЫЕ И DEBUG ФАЙЛЫ =====
+test_*.py
+*test*.py
+debug_*.py
+check_*.py
+diagnose_*.py
+analyze_*.py
+simple_test*.py
+find_*.py
+search_*.py
+*_test.py
+*test.py
+*debug*.py
+
+# ===== ЛОКАЛЬНЫЕ КОНФИГУРАЦИИ =====
+.env.local
+.env.example
+.env.pgvector
+*.local
+
+# ===== BAT ФАЙЛЫ ДЛЯ WINDOWS =====
+*.bat
+
+# ===== ВРЕМЕННЫЕ И СЛУЖЕБНЫЕ ФАЙЛЫ =====
+context_debug.txt
+gigachat_status.json
+gigachat_alerts.log
+gigachat_monitor.log
+emergency_app.py
+migrate_to_pgvector.py
+create_tables.py
+db_manager.py
+test_connection.py
+
+# ===== PYTHON CACHE И ВИРТУАЛЬНЫЕ СРЕДЫ =====
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+ENV/
+.env
+
+# ===== РАЗРАБОТЧЕСКИЕ КОНФИГУРАЦИИ =====
+docker-compose.yml
+docker-compose.pgvector.yml
+docker-compose.production.yml
+run_local.py
+start_bot.py
+# Оставляем только docker-compose.prod.yml
+
+# ===== UPLOADS И ВРЕМЕННЫЕ ДАННЫЕ =====
+uploads/
+*.log
+logs/
+cache/
+
+# ===== IDE И РЕДАКТОРЫ =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===== СИСТЕМНЫЕ ФАЙЛЫ =====
+.DS_Store
+Thumbs.db
+*.tmp
+
+# ===== GIT =====
+.git/
+
+# ===== ПРОЦЕССИНГОВЫЕ ФАЙЛЫ =====
+process_*.py
+*processor*.py
+rechunk_*.py
+fix_*.py
+install_*.py
+
+# ===== ЛОКАЛЬНЫЕ СКРИПТЫ =====
+*_simple.py
+*_safe.py
+quick_*.py
+demo_*.py
+direct_*.py
+
+# ===== ТЕСТОВЫЕ ДАННЫЕ =====
+test_document.txt
+*.test
+test_data/
+
+# ===== MONITORING ФАЙЛЫ =====
+*monitor*.py
+*status*.py
+*_report.py
+
+# ===== SETUP И INIT ФАЙЛЫ =====
+setup_*.py
+init.sql
+create_*.py
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

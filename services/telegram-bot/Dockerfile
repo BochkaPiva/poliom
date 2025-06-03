@@ -1,54 +1,46 @@
-# Multi-stage build для минимизации размера
-FROM python:3.11-slim as builder
+# Используем официальный Python образ
+FROM python:3.11-slim
 
-# Создаем пользователя botuser в builder stage
-RUN useradd --create-home --shell /bin/bash botuser
+# Устанавливаем рабочую директорию
+WORKDIR /app
 
-# Устанавливаем зависимости для сборки
+# Устанавливаем системные зависимости
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Копируем requirements и устанавливаем зависимости
-COPY services/telegram-bot/requirements.txt /tmp/requirements.txt
-COPY services/shared/requirements.txt /tmp/shared_requirements.txt
+# Копируем requirements.txt
+COPY requirements.txt .
 
-# Переключаемся на пользователя botuser и устанавливаем пакеты в его домашнюю директорию
-USER botuser
-RUN pip install --no-cache-dir --user \
-    -r /tmp/requirements.txt \
-    -r /tmp/shared_requirements.txt
+# Устанавливаем Python зависимости
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Финальный образ
-FROM python:3.11-slim
+# Копируем shared модуль
+COPY shared/ shared/
 
-# Создаем того же пользователя botuser
-RUN useradd --create-home --shell /bin/bash botuser
+# Копируем код бота
+COPY services/telegram-bot/ .
 
-# Копируем установленные пакеты (уже с правильным владельцем)
-COPY --from=builder --chown=botuser:botuser /home/botuser/.local /home/botuser/.local
+# Создаем директории для логов и кэша
+RUN mkdir -p logs cache
 
-# Добавляем .local/bin в PATH для пользователя botuser
-ENV PATH=/home/botuser/.local/bin:$PATH
+# Создаем пользователя для безопасности
+RUN adduser --disabled-password --gecos '' appuser && \
+    chown -R appuser:appuser /app
+USER appuser
 
-# Создаем рабочую директорию
-WORKDIR /app
+# Устанавливаем переменные окружения
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
 
-# Копируем shared модули
-COPY services/shared ./shared
+# Открываем порт для health check
+EXPOSE 8080
 
-# Копируем код приложения
-COPY services/telegram-bot .
-
-# Устанавливаем права на директорию
-RUN chown -R botuser:botuser /app
-
-# Переключаемся на пользователя botuser
-USER botuser
-
-# Добавляем PYTHONPATH для shared модулей
-ENV PYTHONPATH=/app:$PYTHONPATH
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
 
 # Запускаем бота
 CMD ["python", "main.py"] 

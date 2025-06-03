@@ -140,7 +140,7 @@
                                         </span>
                                     </td>
                                     <td>
-                                        <small>{{ doc.uploader.username if doc.uploader else 'Неизвестно' }}</small>
+                                        <small>{% if doc.uploader %}{{ doc.uploader.username }}{% else %}Неизвестно{% endif %}</small>
                                     </td>
                                     <td>
                                         <small class="text-muted">
@@ -150,16 +150,17 @@
                                     <td class="table-actions">
                                         <div class="btn-group btn-group-sm" role="group">
                                             {% if doc.processing_status in ['processing', 'pending'] %}
-                                                <button class="btn btn-outline-info btn-sm" 
-                                                        onclick="refreshStatus({{ doc.id }})" 
+                                                <button class="btn btn-outline-info btn-sm refresh-btn" 
+                                                        data-doc-id="{{ doc.id }}"
                                                         title="Обновить статус">
                                                     <i class="bi bi-arrow-clockwise"></i>
                                                 </button>
                                             {% endif %}
                                             
                                             {% if doc.processing_status == 'failed' %}
-                                                <button class="btn btn-outline-warning btn-sm" 
-                                                        onclick="showError({{ doc.id }}, '{{ doc.error_message }}')" 
+                                                <button class="btn btn-outline-warning btn-sm error-btn" 
+                                                        data-doc-id="{{ doc.id }}"
+                                                        data-error="{{ doc.error_message|e }}"
                                                         title="Показать ошибку">
                                                     <i class="bi bi-exclamation-triangle"></i>
                                                 </button>
@@ -269,6 +270,24 @@ function showError(documentId, errorMessage) {
 
 // Автоматическое обновление статусов документов в обработке
 document.addEventListener('DOMContentLoaded', function() {
+    // Обработчики для кнопок обновления статуса
+    document.querySelectorAll('.refresh-btn').forEach(button => {
+        button.addEventListener('click', function() {
+            const docId = this.getAttribute('data-doc-id');
+            refreshStatus(docId);
+        });
+    });
+    
+    // Обработчики для кнопок показа ошибок
+    document.querySelectorAll('.error-btn').forEach(button => {
+        button.addEventListener('click', function() {
+            const docId = this.getAttribute('data-doc-id');
+            const errorMessage = this.getAttribute('data-error');
+            showError(docId, errorMessage);
+        });
+    });
+    
+    // Автоматическое обновление статусов документов в обработке
     const processingDocs = document.querySelectorAll('[id^="status-"]');
     
     processingDocs.forEach(element => {
