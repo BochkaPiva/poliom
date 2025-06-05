@@ -103,8 +103,8 @@
                                     <th>Тип</th>
                                     <th>Размер</th>
                                     <th>Статус</th>
-                                    <th>Загружен</th>
-                                    <th>Дата</th>
+                                    <th>Загрузчик</th>
+                                    <th>Дата загрузки</th>
                                     <th class="table-actions">Действия</th>
                                 </tr>
                             </thead>
@@ -165,6 +165,10 @@
                                                     <i class="bi bi-exclamation-triangle"></i>
                                                 </button>
                                             {% endif %}
+                                            
+                                            <a href="/documents/{{ doc.id }}/download" class="btn btn-success btn-sm" title="Скачать файл">
+                                                <i class="fas fa-download"></i> Скачать
+                                            </a>
                                             
                                             <form method="post" action="/documents/{{ doc.id }}/delete" 
                                                   style="display: inline;" 

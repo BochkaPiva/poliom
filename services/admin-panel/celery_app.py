@@ -6,24 +6,31 @@ import os
 import sys
 from pathlib import Path
 from celery import Celery
+import socket
 
 # Добавляем путь к shared модулям
 current_dir = Path(__file__).parent
 services_dir = current_dir.parent
 sys.path.insert(0, str(services_dir))
 
-# Загружаем переменные окружения
-from dotenv import load_dotenv
-load_dotenv('.env.local')
+# Загружаем переменные окружения только для локальной разработки
+# В Docker все переменные уже установлены через docker-compose.yml
+if not os.getenv('DATABASE_URL'):  # DATABASE_URL есть только в Docker
+    from dotenv import load_dotenv
+    load_dotenv('.env.local')
 
-# Настройки Redis
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+# Настройки Redis - приоритет переменным окружения из Docker
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL") or REDIS_URL
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND") or REDIS_URL
+
+print(f"🔍 Celery config: broker={CELERY_BROKER_URL}, backend={CELERY_RESULT_BACKEND}")
 
 # Создаем Celery приложение
 app = Celery(
     'admin_panel',
-    broker=REDIS_URL,
-    backend=REDIS_URL,
+    broker=CELERY_BROKER_URL,
+    backend=CELERY_RESULT_BACKEND,
     include=['tasks']
 )
 
@@ -53,7 +60,6 @@ app.conf.update(
     
     # Настройки результатов
     result_expires=3600,  # Результаты хранятся 1 час
-    result_persistent=True,
     
     # Отключаем проблемные функции для Windows
     worker_disable_rate_limits=True,

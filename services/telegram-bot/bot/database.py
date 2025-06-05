@@ -17,12 +17,13 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root / "shared"))
 
 try:
-    from models.database import Base
-    from models.user import User
-    from models.admin import Admin
-    from models.document import Document, DocumentChunk
-    from models.query_log import QueryLog
-    from models.menu import MenuSection, MenuItem
+    # Попытка импорта из shared (для Docker)
+    from shared.models.database import Base
+    from shared.models.user import User
+    from shared.models.admin import Admin
+    from shared.models.document import Document, DocumentChunk
+    from shared.models.query_log import QueryLog
+    from shared.models.menu import MenuSection, MenuItem
 except ImportError:
     # Fallback для локальной разработки
     sys.path.insert(0, str(project_root / "services" / "shared"))
@@ -313,15 +314,133 @@ def get_menu_items(section_id: int):
         db.close()
 
 def get_menu_item_content(item_id: int):
-    """Получить содержимое элемента меню"""
+    """Получить содержимое элемента меню с информацией об источниках"""
     try:
         db = next(get_db_session())
         item = db.query(MenuItem).filter(MenuItem.id == item_id).first()
         if item:
-            return {"title": item.title, "content": item.content}
+            import json
+            
+            # Парсим JSON поля источников
+            source_document_ids = []
+            source_document_names = []
+            source_chunk_ids = []
+            
+            try:
+                if item.source_document_ids:
+                    source_document_ids = json.loads(item.source_document_ids)
+                if item.source_document_names:
+                    source_document_names = json.loads(item.source_document_names)
+                if item.source_chunk_ids:
+                    source_chunk_ids = json.loads(item.source_chunk_ids)
+            except json.JSONDecodeError:
+                logger.warning(f"Ошибка парсинга JSON источников для элемента {item_id}")
+            
+            return {
+                "title": item.title, 
+                "content": item.content,
+                "source_document_ids": source_document_ids,
+                "source_document_names": source_document_names,
+                "source_chunk_ids": source_chunk_ids
+            }
         return None
     except Exception as e:
         logger.error(f"Ошибка получения содержимого элемента: {e}")
+        return None
+    finally:
+        db.close()
+
+def get_documents_by_ids(document_ids: list):
+    """Получить документы по списку ID"""
+    try:
+        db = next(get_db_session())
+        
+        if not document_ids:
+            return []
+        
+        documents = db.query(Document).filter(Document.id.in_(document_ids)).all()
+        result = []
+        
+        for doc in documents:
+            result.append({
+                'title': doc.title or doc.original_filename,
+                'original_filename': doc.original_filename,
+                'created_at': doc.created_at
+            })
+        
+        return result
+    except Exception as e:
+        logger.error(f"Ошибка получения документов по ID: {e}")
+        return []
+    finally:
+        db.close()
+
+def get_completed_documents(limit: int = None, offset: int = None):
+    """Получить список завершенных документов с пагинацией"""
+    try:
+        db = next(get_db_session())
+        query = db.query(Document).filter(Document.processing_status == 'completed').order_by(Document.created_at.desc())
+        
+        if offset:
+            query = query.offset(offset)
+        if limit:
+            query = query.limit(limit)
+            
+        documents = query.all()
+        
+        result = []
+        for doc in documents:
+            result.append({
+                'id': doc.id,
+                'title': doc.title or doc.original_filename,
+                'original_filename': doc.original_filename,
+                'file_path': doc.file_path,
+                'file_type': doc.file_type,
+                'file_size': doc.file_size,
+                'created_at': doc.created_at,
+                'status': doc.processing_status
+            })
+        
+        return result
+    except Exception as e:
+        logger.error(f"Ошибка получения завершенных документов: {e}")
+        return []
+    finally:
+        db.close()
+
+def get_completed_documents_count():
+    """Получить общее количество завершенных документов"""
+    try:
+        db = next(get_db_session())
+        count = db.query(Document).filter(Document.processing_status == 'completed').count()
+        return count
+    except Exception as e:
+        logger.error(f"Ошибка получения количества завершенных документов: {e}")
+        return 0
+    finally:
+        db.close()
+
+def get_document_by_id(doc_id: int):
+    """Получить документ по ID"""
+    try:
+        db = next(get_db_session())
+        document = db.query(Document).filter(Document.id == doc_id).first()
+        
+        if not document:
+            return None
+            
+        return {
+            'id': document.id,
+            'title': document.title or document.original_filename,
+            'original_filename': document.original_filename,
+            'file_path': document.file_path,
+            'file_type': document.file_type,
+            'file_size': document.file_size,
+            'created_at': document.created_at,
+            'status': document.processing_status
+        }
+    except Exception as e:
+        logger.error(f"Ошибка получения документа по ID {doc_id}: {e}")
         return None
     finally:
         db.close() 

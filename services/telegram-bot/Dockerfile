@@ -18,13 +18,13 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Копируем shared модуль
-COPY shared/ shared/
+COPY services/shared/ shared/
 
 # Копируем код бота
 COPY services/telegram-bot/ .
 
-# Создаем директории для логов и кэша
-RUN mkdir -p logs cache
+# Создаем директории для логов, кэша и моделей
+RUN mkdir -p logs cache models_cache uploads
 
 # Создаем пользователя для безопасности
 RUN adduser --disabled-password --gecos '' appuser && \
@@ -32,7 +32,7 @@ RUN adduser --disabled-password --gecos '' appuser && \
 USER appuser
 
 # Устанавливаем переменные окружения
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app:/app/shared
 ENV PYTHONUNBUFFERED=1
 
 # Открываем порт для health check

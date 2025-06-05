@@ -305,7 +305,7 @@ def create_main_keyboard(user_telegram_id: int = None):
     ]
     
     # Добавляем кнопку статуса системы только для администратора
-    if user_telegram_id == 429336806:
+    if user_telegram_id == 1463020624:
         keyboard_buttons.append([InlineKeyboardButton(text="🏥 Статус системы", callback_data="show_health")])
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
@@ -338,7 +338,7 @@ def create_section_keyboard(section_id: int):
         ])
         return keyboard
 
-def create_documents_keyboard(page: int = 0, documents_per_page: int = 10):
+def create_documents_keyboard(page: int = 0, documents_per_page: int = 8):
     """Создание клавиатуры для списка документов с пагинацией"""
     try:
         # Получаем общее количество документов
@@ -356,11 +356,30 @@ def create_documents_keyboard(page: int = 0, documents_per_page: int = 10):
         # Добавляем кнопки документов
         for doc in documents:
             title = doc.get('title') or doc.get('original_filename', 'Документ')
-            # Ограничиваем длину названия для кнопки
-            display_title = title[:35] + "..." if len(title) > 35 else title
+            file_type = doc.get('file_type', '').upper()
+            
+            # Увеличиваем лимит символов и добавляем тип файла
+            max_title_length = 45  # Увеличено с 35 до 45
+            if len(title) > max_title_length:
+                display_title = title[:max_title_length] + "..."
+            else:
+                display_title = title
+            
+            # Добавляем эмодзи в зависимости от типа файла
+            file_emoji = {
+                'PDF': '📕',
+                'DOCX': '📘', 
+                'DOC': '📘',
+                'XLSX': '📊',
+                'XLS': '📊',
+                'TXT': '📄'
+            }.get(file_type, '📄')
+            
+            button_text = f"{file_emoji} {display_title}"
+            
             keyboard_buttons.append([
                 InlineKeyboardButton(
-                    text=f"📄 {display_title}", 
+                    text=button_text, 
                     callback_data=f"doc_info_{doc['id']}"
                 )
             ])
@@ -375,10 +394,11 @@ def create_documents_keyboard(page: int = 0, documents_per_page: int = 10):
                     InlineKeyboardButton(text="⬅️ Назад", callback_data=f"docs_page_{page-1}")
                 )
             
-            # Информация о текущей странице
+            # Информация о текущей странице с более подробной информацией
+            page_info = f"📄 {page + 1}/{total_pages} (всего: {total_documents})"
             nav_buttons.append(
                 InlineKeyboardButton(
-                    text=f"{page + 1}/{total_pages}", 
+                    text=page_info, 
                     callback_data="current_page"
                 )
             )
@@ -390,6 +410,25 @@ def create_documents_keyboard(page: int = 0, documents_per_page: int = 10):
                 )
             
             keyboard_buttons.append(nav_buttons)
+            
+            # Добавляем быструю навигацию для больших списков
+            if total_pages > 3:
+                quick_nav = []
+                
+                # Переход к первой странице
+                if page > 1:
+                    quick_nav.append(
+                        InlineKeyboardButton(text="⏮️ Первая", callback_data="docs_page_0")
+                    )
+                
+                # Переход к последней странице
+                if page < total_pages - 2:
+                    quick_nav.append(
+                        InlineKeyboardButton(text="Последняя ⏭️", callback_data=f"docs_page_{total_pages-1}")
+                    )
+                
+                if quick_nav:
+                    keyboard_buttons.append(quick_nav)
         
         # Кнопка возврата
         keyboard_buttons.append([
@@ -618,6 +657,12 @@ async def question_handler(message: Message):
             await message.answer("❌ Ваш доступ к боту ограничен. Обратитесь к администратору.")
             return
         
+        # Отправляем промежуточный ответ с индикатором поиска
+        search_message = await message.answer(
+            "🔍 **Ищу информацию по вашему запросу...**",
+            parse_mode='Markdown'
+        )
+        
         # Отправляем индикатор "печатает"
         await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
         
@@ -670,11 +715,19 @@ async def question_handler(message: Message):
                     
                     # Добавляем источники
                     if result.get('sources'):
-                        response_text += "\n\n📚 **Источники:**"
-                        for j, source in enumerate(result['sources'], 1):
-                            title = source.get('title', 'Документ')
-                            if len(title) > 5:  # Исключаем слишком короткие названия
-                                response_text += f"\n{j}. {title}"
+                        # Добавляем рекомендацию перед источниками
+                        response_text += "\n\n💡 *Если ответ не удовлетворил запросу, попробуйте переформулировать его, либо воспользуйтесь источниками для самостоятельного поиска.*"
+                        
+                        # Получаем файлы для синхронизации с источниками
+                        files = result.get('files', [])
+                        
+                        # Показываем источники (RAG уже обеспечивает дедупликацию)
+                        if result.get('sources'):
+                            response_text += "\n\n📚 **Источники:**"
+                            for i, source in enumerate(result['sources'], 1):
+                                title = source.get('title', 'Документ')
+                                if len(title) > 2:  # Исключаем слишком короткие названия
+                                    response_text += f"\n{i}. {title}"
             else:
                 logger.info("Нет релевантных чанков - возвращаем fallback ответ")
                 if result.get('answer') and not is_blocked_response(result['answer']):
@@ -694,7 +747,7 @@ async def question_handler(message: Message):
         if response_text:
             response_text = format_response_for_telegram(response_text)
         
-        # Отправляем ответ
+        # Заменяем промежуточное сообщение готовым ответом
         try:
             # Создаем клавиатуру с дополнительными кнопками
             keyboard_buttons = []
@@ -728,20 +781,20 @@ async def question_handler(message: Message):
                 }
                 logger.info(f"Сохранены файлы для сообщения {message.message_id}: {[f['title'] for f in files]}")
             
-            # Пытаемся отправить с разными форматами markdown
+            # Пытаемся заменить промежуточное сообщение готовым ответом
             try:
-                await message.answer(response_text, reply_markup=back_keyboard, parse_mode='Markdown')
+                await search_message.edit_text(response_text, reply_markup=back_keyboard, parse_mode='Markdown')
             except:
                 try:
                     # Убираем все markdown форматирование
                     clean_text = response_text.replace('**', '').replace('*', '').replace('_', '').replace('`', '')
-                    await message.answer(clean_text, reply_markup=back_keyboard)
+                    await search_message.edit_text(clean_text, reply_markup=back_keyboard)
                 except:
-                    await message.answer("Ответ получен, но возникла ошибка форматирования.", reply_markup=back_keyboard)
+                    await search_message.edit_text("Ответ получен, но возникла ошибка форматирования.", reply_markup=back_keyboard)
         
         except Exception as send_error:
-            logger.error(f"Ошибка отправки сообщения: {send_error}")
-            # Fallback - отправляем простое сообщение
+            logger.error(f"Ошибка замены сообщения: {send_error}")
+            # Fallback - отправляем новое сообщение
             try:
                 simple_keyboard = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="🔙 Главное меню", callback_data="back_to_main")]
@@ -753,17 +806,17 @@ async def question_handler(message: Message):
         # Логируем запрос
         try:
             await log_user_query_async(
-            user_id=user.id,
-            query=message.text,
-                response=response_text[:1000]  # Ограничиваем длину для логирования
-        )
+                user_id=user.id,
+                query=message.text,
+                    response=response_text[:1000]  # Ограничиваем длину для логирования
+            )
         except Exception as log_error:
             logger.error(f"Ошибка логирования: {log_error}")
         
     except Exception as e:
         logger.error(f"Ошибка в question_handler: {e}")
         try:
-        await message.answer(
+            await message.answer(
                 "❌ Произошла ошибка при обработке вашего запроса. Попробуйте позже.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="🔙 Главное меню", callback_data="back_to_main")]
@@ -983,8 +1036,7 @@ async def faq_item_callback(callback: CallbackQuery):
         if source_names and source_document_ids:
             answer_text += "\n\n📚 **Источники:**"
             for i, (source_name, doc_id) in enumerate(zip(source_names, source_document_ids), 1):
-                answer_text += f"\n{i}. {source_name} (ID: {doc_id})"
-        
+                answer_text += f"\n{i}. {source_name}"         
         # Создаем простую клавиатуру для возврата
         keyboard_buttons = [
             [InlineKeyboardButton(text="🔙 К разделам", callback_data="show_faq")],
@@ -1011,11 +1063,11 @@ async def faq_item_callback(callback: CallbackQuery):
         sources_str = ", ".join(source_names) if source_names else "FAQ Database"
         
         await log_user_query_async(
-                user_id=user.id,
+            user_id=user.id,
             query=f"FAQ: {item_data['title']}",
             response=item_data['content'],
             documents_used=sources_str
-            )
+        )
             
     except Exception as e:
         logger.error(f"Ошибка в faq_item_callback: {e}")
@@ -1071,8 +1123,8 @@ async def show_files_callback(callback: CallbackQuery):
                 parse_mode='Markdown'
             )
             await callback.answer()
-        return
-    
+            return
+        
         # Правильно извлекаем файлы из storage
         storage_data = files_storage.get(message_id, {})
         files = storage_data.get('files', []) if isinstance(storage_data, dict) else []
@@ -1226,7 +1278,7 @@ async def show_files_callback(callback: CallbackQuery):
             del files_storage[message_id]
         
         await callback.answer()
-            
+        
     except Exception as e:
         logger.error(f"Ошибка в show_files_callback: {e}")
         
@@ -1259,8 +1311,23 @@ async def show_documents_callback(callback: CallbackQuery):
                 parse_mode='Markdown'
             )
         else:
+            # Определяем количество страниц
+            documents_per_page = 8
+            total_pages = (total_docs + documents_per_page - 1) // documents_per_page
+            
+            header_text = f"""📚 **Корпоративные документы**
+
+📊 **Статистика:**
+• Всего документов: {total_docs}
+• Страниц: {total_pages}
+• На странице: до {documents_per_page} документов
+
+💡 **Подсказка:** Нажмите на документ для просмотра деталей и скачивания
+
+Выберите документ:"""
+            
             await callback.message.edit_text(
-                f"📄 **Корпоративные документы**\n\nВсего документов: {total_docs}\n\nВыберите документ для просмотра:",
+                header_text,
                 reply_markup=keyboard,
                 parse_mode='Markdown'
             )
@@ -1282,8 +1349,23 @@ async def docs_page_callback(callback: CallbackQuery):
         page = int(callback.data.replace("docs_page_", ""))
         keyboard, total_docs = create_documents_keyboard(page=page)
         
+        # Определяем количество страниц
+        documents_per_page = 8
+        total_pages = (total_docs + documents_per_page - 1) // documents_per_page
+        
+        # Показываем информацию о текущей странице
+        start_doc = page * documents_per_page + 1
+        end_doc = min((page + 1) * documents_per_page, total_docs)
+        
+        header_text = f"""📚 **Корпоративные документы**
+
+📄 **Страница {page + 1} из {total_pages}**
+Показаны документы {start_doc}-{end_doc} из {total_docs}
+
+Выберите документ:"""
+        
         await callback.message.edit_text(
-            f"📄 **Корпоративные документы**\n\nВсего документов: {total_docs}\n\nВыберите документ для просмотра:",
+            header_text,
             reply_markup=keyboard,
             parse_mode='Markdown'
         )
@@ -1316,7 +1398,7 @@ async def doc_info_callback(callback: CallbackQuery):
             return
         
         # Форматируем размер файла
-        file_size = doc_info.get('file_size', 0)
+        file_size = doc_info.get('file_size')
         if file_size:
             if file_size < 1024:
                 size_str = f"{file_size} байт"
@@ -1327,24 +1409,24 @@ async def doc_info_callback(callback: CallbackQuery):
         else:
             size_str = "Неизвестно"
         
-        # Форматируем дату создания
+        # Форматируем дату создания (Омск +6 UTC)
         created_at = doc_info.get('created_at')
         if created_at:
-            # Конвертируем в часовой пояс Омска (+6 UTC)
-            from datetime import timedelta
-            omsk_offset = timedelta(hours=6)
-            created_at_omsk = created_at + omsk_offset
-            date_str = created_at_omsk.strftime('%d.%m.%Y %H:%M (Омск)')
+            created_at_omsk = created_at + timedelta(hours=6)
+            date_str = created_at_omsk.strftime('%d.%m.%Y')
         else:
             date_str = "Неизвестно"
         
-        info_text = f"""📄 **{doc_info['title']}**
+        # Экранируем специальные символы для Markdown
+        title = doc_info['title'].replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)')
+        filename = doc_info['original_filename'].replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)')
+        
+        info_text = f"""📄 **{title}**
 
-📁 **Имя файла:** {doc_info['original_filename']}
+📁 **Имя файла:** {filename}
 📊 **Размер:** {size_str}
 🗂 **Тип:** {doc_info.get('file_type', 'Неизвестно').upper()}
 📅 **Добавлен:** {date_str}
-🆔 **ID:** {doc_info['id']}
 ✅ **Статус:** Обработан и доступен"""
         
         # Создаем клавиатуру с возможностью скачивания
@@ -1485,7 +1567,7 @@ async def download_doc_callback(callback: CallbackQuery):
                 filename=send_filename
             )
             
-            caption = f"📄 **{title}**\n🆔 ID: {doc_id}"
+            caption = f"📄 **{title}**"
             
             await callback.message.answer_document(
                 document=file_input,

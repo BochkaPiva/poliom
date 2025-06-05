@@ -3,7 +3,7 @@ version: '3.8'
 services:
   # PostgreSQL база данных
   postgres:
-    image: postgres:15
+    image: pgvector/pgvector:pg15
     container_name: rag_postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
@@ -93,6 +93,8 @@ services:
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - PYTHONPATH=/app
       # Кэширование моделей
@@ -122,32 +124,38 @@ services:
   # Telegram бот
   telegram-bot:
     build:
-      context: .
-      dockerfile: services/telegram-bot/Dockerfile
+      context: ./services/telegram-bot
+      dockerfile: Dockerfile
     container_name: rag_telegram_bot
-    environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - GIGACHAT_API_KEY=${GIGACHAT_API_KEY}
-      - GIGACHAT_SCOPE=${GIGACHAT_SCOPE}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - PYTHONPATH=/app
-      # Кэширование моделей
-      - TRANSFORMERS_CACHE=/app/models_cache
-      - HF_HOME=/app/models_cache
-    volumes:
-      - ml_models_cache:/app/models_cache  # Общий кэш моделей
+    restart: unless-stopped  # Автоматический перезапуск
     depends_on:
       postgres:
         condition: service_healthy
-    networks:
-      - rag_network
-    deploy:
-      resources:
-        limits:
-          memory: 2G  # Увеличено для ML
-          cpus: '0.5'
-    restart: unless-stopped
+      redis:
+        condition: service_healthy
+      celery-worker:
+        condition: service_healthy
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=rag_db
+      - POSTGRES_USER=rag_user
+      - POSTGRES_PASSWORD=rag_password
+      - REDIS_URL=redis://redis:6379/0
+      - GIGACHAT_API_KEY=${GIGACHAT_API_KEY}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - PYTHONPATH=/app:/app/shared
+    volumes:
+      - ./services/shared:/app/shared:ro
+      - ./uploads:/app/uploads:rw
+    ports:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8080/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
   # pgAdmin веб-интерфейс
   pgadmin:

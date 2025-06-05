@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv('.env.local')
 
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Request, Cookie, Response
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,9 +48,19 @@ except ImportError:
 # Импортируем Celery для обработки документов
 try:
     from celery.result import AsyncResult
+    import os
+    
+    # Принудительно устанавливаем переменные окружения для Celery
+    redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+    os.environ["CELERY_BROKER_URL"] = redis_url
+    os.environ["CELERY_RESULT_BACKEND"] = redis_url
+    
+    # Теперь импортируем celery_app с правильными переменными окружения
     from celery_app import app as celery_app
+    # И затем импортируем задачи
     from tasks import process_document
     CELERY_AVAILABLE = True
+    
 except ImportError:
     print("⚠️  Celery недоступен - функции обработки документов отключены")
     CELERY_AVAILABLE = False
@@ -305,35 +315,45 @@ async def upload_document(
 ):
     """Загрузка документа через веб-форму"""
     try:
+        logger.info(f"Начинаю загрузку документа: {file.filename}, title: {title}, admin_id: {admin_id}")
+        
         # Валидируем файл
         validate_file(file)
+        logger.info("Файл прошел валидацию")
         
         # Проверяем администратора
         target_admin = db.query(Admin).filter(Admin.id == admin_id).first()
         if not target_admin:
+            logger.error(f"Администратор с ID {admin_id} не найден")
             return templates.TemplateResponse("error.html", {
                 "request": request,
                 "error": "Администратор не найден"
             })
+        logger.info(f"Администратор найден: {target_admin.username}")
         
         # Генерируем уникальное имя файла
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         file_ext = Path(file.filename).suffix.lower()
         unique_filename = f"{timestamp}_{file.filename}"
         file_path = uploads_dir / unique_filename
+        logger.info(f"Сохраняю файл как: {file_path}")
         
         # Сохраняем файл
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
+        logger.info("Файл сохранен на диск")
         
         # Получаем размер файла
         file_size = file_path.stat().st_size
+        logger.info(f"Размер файла: {file_size} байт")
         
         # Создаем запись в базе данных
+        # ВАЖНО: сохраняем путь как относительный к /app/uploads для надежности
+        relative_file_path = f"/app/uploads/{unique_filename}"
         document = Document(
             filename=unique_filename,
             original_filename=file.filename,
-            file_path=str(file_path),
+            file_path=relative_file_path,  # Используем стандартизированный путь
             file_size=file_size,
             file_type=file_ext.lstrip('.'),
             title=title or file.filename,
@@ -345,29 +365,41 @@ async def upload_document(
         db.add(document)
         db.commit()
         db.refresh(document)
+        logger.info(f"Документ сохранен в БД с ID: {document.id}")
         
         # Запускаем задачу обработки через Celery
         if CELERY_AVAILABLE and process_document:
-            task = process_document.delay(document.id)
-            logger.info(f"Документ {document.id} загружен и отправлен на обработку. Task ID: {task.id}")
+            try:
+                task = process_document.delay(document.id)
+                logger.info(f"Документ {document.id} загружен и отправлен на обработку. Task ID: {task.id}")
+            except Exception as celery_error:
+                logger.error(f"Ошибка запуска Celery задачи: {str(celery_error)}")
+                # Не прерываем процесс, просто помечаем как загруженный
+                document.processing_status = "uploaded"
+                db.commit()
         else:
             # Если Celery недоступен, просто помечаем как загруженный
             document.processing_status = "uploaded"
             db.commit()
             logger.info(f"Документ {document.id} загружен (Celery недоступен)")
         
+        logger.info("Загрузка документа завершена успешно")
         return RedirectResponse(url="/documents?success=uploaded", status_code=303)
                 
     except HTTPException as e:
+        logger.error(f"HTTP ошибка при загрузке документа: {e.detail}")
         return templates.TemplateResponse("error.html", {
             "request": request,
             "error": e.detail
         })
     except Exception as e:
-        logger.error(f"Ошибка загрузки документа: {str(e)}")
+        logger.error(f"Неожиданная ошибка загрузки документа: {str(e)}")
+        logger.error(f"Тип ошибки: {type(e).__name__}")
+        import traceback
+        logger.error(f"Трассировка: {traceback.format_exc()}")
         return templates.TemplateResponse("error.html", {
             "request": request,
-            "error": "Ошибка загрузки документа"
+            "error": f"Ошибка загрузки документа: {str(e)}"
         })
 
 
@@ -759,7 +791,7 @@ async def delete_admin(admin_id: int, request: Request, db: Session = Depends(ge
 
 @app.get("/api/documents/status/{document_id}")
 async def get_document_status_api(document_id: int, db: Session = Depends(get_db), admin: Admin = Depends(require_auth)):
-    """API для получения статуса документа (для AJAX)"""
+    """API для получения статуса документа"""
     try:
         document = db.query(Document).filter(Document.id == document_id).first()
         if not document:
@@ -775,6 +807,67 @@ async def get_document_status_api(document_id: int, db: Session = Depends(get_db
     except Exception as e:
         logger.error(f"Ошибка получения статуса документа {document_id}: {str(e)}")
         return {"error": "Ошибка получения статуса"}
+
+
+@app.get("/documents/{document_id}/download")
+async def download_document(
+    document_id: int, 
+    db: Session = Depends(get_db), 
+    admin: Admin = Depends(require_auth)
+):
+    """Скачивание документа"""
+    try:
+        # Получаем документ из базы данных
+        document = db.query(Document).filter(Document.id == document_id).first()
+        if not document:
+            raise HTTPException(status_code=404, detail="Документ не найден")
+        
+        # Проверяем существование файла
+        file_path = Path(document.file_path)
+        if not file_path.exists():
+            # Пробуем найти файл в uploads директории
+            uploads_file_path = uploads_dir / document.original_filename
+            if uploads_file_path.exists():
+                file_path = uploads_file_path
+            else:
+                raise HTTPException(status_code=404, detail="Файл документа не найден на диске")
+        
+        # Определяем MIME тип на основе расширения файла
+        file_extension = file_path.suffix.lower()
+        media_types = {
+            '.pdf': 'application/pdf',
+            '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            '.doc': 'application/msword',
+            '.txt': 'text/plain'
+        }
+        
+        media_type = media_types.get(file_extension, 'application/octet-stream')
+        
+        # Формируем имя файла для скачивания
+        safe_filename = document.original_filename or f"document_{document.id}{file_extension}"
+        
+        logger.info(f"Администратор {admin.username} скачивает документ {document.id}: {safe_filename}")
+        
+        # Кодируем имя файла для заголовка Content-Disposition
+        import urllib.parse
+        encoded_filename = urllib.parse.quote(safe_filename, safe='')
+        
+        # Возвращаем файл для скачивания
+        return FileResponse(
+            path=str(file_path),
+            media_type=media_type,
+            filename=safe_filename,
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+                "Cache-Control": "no-cache"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка скачивания документа {document_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Ошибка при скачивании файла")
 
 
 if __name__ == "__main__":

@@ -305,7 +305,7 @@ def create_main_keyboard(user_telegram_id: int = None):
     ]
     
     # Добавляем кнопку статуса системы только для администратора
-    if user_telegram_id == 429336806:
+    if user_telegram_id == 1463020624:
         keyboard_buttons.append([InlineKeyboardButton(text="🏥 Статус системы", callback_data="show_health")])
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
@@ -670,11 +670,30 @@ async def question_handler(message: Message):
                     
                     # Добавляем источники
                     if result.get('sources'):
-                        response_text += "\n\n📚 **Источники:**"
-                        for j, source in enumerate(result['sources'], 1):
-                            title = source.get('title', 'Документ')
-                            if len(title) > 5:  # Исключаем слишком короткие названия
-                                response_text += f"\n{j}. {title}"
+                        # Добавляем рекомендацию перед источниками
+                        response_text += "\n\n💡 *Если ответ не удовлетворил запросу, попробуйте переформулировать его, либо воспользуйтесь источниками для самостоятельного поиска.*"
+                        
+                        # Получаем файлы для синхронизации с источниками
+                        files = result.get('files', [])
+                        
+                        # Показываем источники на основе файлов (они уже правильно отфильтрованы в RAG)
+                        files = result.get("files", [])
+                        
+                        if files:
+                            response_text += "\n\n📚 **Источники:**"
+                            # Дедупликация источников по названию
+                            seen_titles = set()
+                            unique_files = []
+                            for file in files:
+                                title = file.get("title", "Документ")
+                                if title not in seen_titles and len(title) > 5:
+                                    seen_titles.add(title)
+                                    unique_files.append(file)
+                            
+                            for i, file in enumerate(unique_files, 1):
+                                title = file.get("title", "Документ")
+                                response_text += f"\n{i}. {title}"
+                                    response_text += f"\n{i}. {title}"
             else:
                 logger.info("Нет релевантных чанков - возвращаем fallback ответ")
                 if result.get('answer') and not is_blocked_response(result['answer']):
@@ -753,17 +772,17 @@ async def question_handler(message: Message):
         # Логируем запрос
         try:
             await log_user_query_async(
-            user_id=user.id,
-            query=message.text,
-                response=response_text[:1000]  # Ограничиваем длину для логирования
-        )
+                user_id=user.id,
+                query=message.text,
+                    response=response_text[:1000]  # Ограничиваем длину для логирования
+            )
         except Exception as log_error:
             logger.error(f"Ошибка логирования: {log_error}")
         
     except Exception as e:
         logger.error(f"Ошибка в question_handler: {e}")
         try:
-        await message.answer(
+            await message.answer(
                 "❌ Произошла ошибка при обработке вашего запроса. Попробуйте позже.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="🔙 Главное меню", callback_data="back_to_main")]
@@ -983,8 +1002,7 @@ async def faq_item_callback(callback: CallbackQuery):
         if source_names and source_document_ids:
             answer_text += "\n\n📚 **Источники:**"
             for i, (source_name, doc_id) in enumerate(zip(source_names, source_document_ids), 1):
-                answer_text += f"\n{i}. {source_name} (ID: {doc_id})"
-        
+                answer_text += f"\n{i}. {source_name}"         
         # Создаем простую клавиатуру для возврата
         keyboard_buttons = [
             [InlineKeyboardButton(text="🔙 К разделам", callback_data="show_faq")],
@@ -1011,11 +1029,11 @@ async def faq_item_callback(callback: CallbackQuery):
         sources_str = ", ".join(source_names) if source_names else "FAQ Database"
         
         await log_user_query_async(
-                user_id=user.id,
+            user_id=user.id,
             query=f"FAQ: {item_data['title']}",
             response=item_data['content'],
             documents_used=sources_str
-            )
+        )
             
     except Exception as e:
         logger.error(f"Ошибка в faq_item_callback: {e}")
@@ -1071,8 +1089,8 @@ async def show_files_callback(callback: CallbackQuery):
                 parse_mode='Markdown'
             )
             await callback.answer()
-        return
-    
+            return
+        
         # Правильно извлекаем файлы из storage
         storage_data = files_storage.get(message_id, {})
         files = storage_data.get('files', []) if isinstance(storage_data, dict) else []
@@ -1226,7 +1244,7 @@ async def show_files_callback(callback: CallbackQuery):
             del files_storage[message_id]
         
         await callback.answer()
-            
+        
     except Exception as e:
         logger.error(f"Ошибка в show_files_callback: {e}")
         

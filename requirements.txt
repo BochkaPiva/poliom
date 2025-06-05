@@ -27,7 +27,7 @@ httpx==0.25.2
 aiohttp==3.9.1
 requests==2.31.0
 python-multipart==0.0.6
-aiofiles==23.2.0
+aiofiles>=23.2.1
 
 # ===== TEMPLATES & UI =====
 jinja2==3.1.2

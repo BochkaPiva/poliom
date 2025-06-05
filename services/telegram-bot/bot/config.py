@@ -37,6 +37,7 @@ class Config:
         # Настройки бота
         self.RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "10"))
         self.ADMIN_IDS: list = self._parse_admin_ids(os.getenv("ADMIN_IDS", ""))
+        self.ADMIN_USER_ID: int = int(os.getenv("ADMIN_USER_ID", "1463020624"))  # ID основного администратора
         
         # Настройки логирования
         self.LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

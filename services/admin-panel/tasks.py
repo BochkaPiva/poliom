@@ -15,7 +15,6 @@ current_dir = Path(__file__).parent
 services_dir = current_dir.parent
 sys.path.insert(0, str(services_dir))
 
-from celery import Celery
 from sqlalchemy.orm import sessionmaker
 
 # Импортируем shared модули

@@ -2,24 +2,29 @@
 Асинхронный сервис для работы с RAG системой
 """
 
-import asyncio
-import logging
-import os
 import sys
+import os
+import logging
+import asyncio
+from typing import Optional, Dict, Any, List
 from pathlib import Path
-from typing import Dict, Any, Optional
 
-# Добавляем путь к shared модулям
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root / "shared"))
-sys.path.insert(0, str(project_root / "services" / "telegram-bot"))
+# Определяем корневую директорию проекта
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = Path(current_dir).parent.parent.parent
 
+# Добавляем пути в sys.path если их нет
+shared_path = str(project_root / "services" / "shared")
+if shared_path not in sys.path:
+    sys.path.insert(0, shared_path)
+
+# Основные импорты
 try:
-    from utils.simple_rag import SimpleRAG
-    from utils.llm_client import SimpleLLMClient
-    from models.document import Document, DocumentChunk
+    from shared.utils.simple_rag import SimpleRAG
+    from shared.utils.llm_client import SimpleLLMClient
+    from shared.models.document import Document, DocumentChunk
 except ImportError:
-    # Fallback для локальной разработки
+    # Добавляем пути в систему
     sys.path.insert(0, str(project_root / "services" / "shared"))
     from utils.simple_rag import SimpleRAG
     from utils.llm_client import SimpleLLMClient

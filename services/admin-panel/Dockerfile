@@ -18,7 +18,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Копируем shared модуль
-COPY shared/ shared/
+COPY services/shared/ shared/
 
 # Копируем код админ-панели
 COPY services/admin-panel/ .
