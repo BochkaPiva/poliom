@@ -12,13 +12,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Копируем requirements.txt
-COPY requirements.txt .
+COPY services/telegram-bot/requirements.txt .
 
 # Устанавливаем Python зависимости
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Копируем shared модуль
-COPY services/shared/ shared/
 
 # Копируем код бота
 COPY services/telegram-bot/ .

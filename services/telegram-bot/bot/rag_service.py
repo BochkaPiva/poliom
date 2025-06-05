@@ -96,11 +96,11 @@ class RAGService:
             await self.initialize()
         
         try:
-            # Выполняем поиск ответа в отдельном потоке
+            # Выполняем поиск ответа в отдельном потоке с новой сессией
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None,
-                self.rag_system.answer_question,
+                self._answer_question_sync,
                 question,
                 user_id
             )
@@ -116,6 +116,38 @@ class RAGService:
                 'error': str(e),
                 'tokens_used': 0
             }
+    
+    def _answer_question_sync(self, question: str, user_id: Optional[int] = None) -> Dict[str, Any]:
+        """Синхронный ответ на вопрос с правильным управлением сессией"""
+        db_session = None
+        try:
+            # Создаем новую сессию для каждого запроса
+            db_session = next(get_db_session())
+            rag_system = SimpleRAG(db_session, self.gigachat_api_key)
+            
+            result = rag_system.answer_question(question, user_id)
+            return result
+            
+        except Exception as e:
+            logger.error(f"Ошибка в синхронном ответе: {e}")
+            if db_session:
+                try:
+                    db_session.rollback()
+                except:
+                    pass
+            return {
+                'answer': 'Произошла ошибка при обработке вашего вопроса.',
+                'sources': [],
+                'success': False,
+                'error': str(e),
+                'tokens_used': 0
+            }
+        finally:
+            if db_session:
+                try:
+                    db_session.close()
+                except:
+                    pass
     
     async def health_check(self) -> Dict[str, Any]:
         """
@@ -188,6 +220,7 @@ class RAGService:
     
     def _count_documents_sync(self) -> int:
         """Синхронный подсчет документов"""
+        db_session = None
         try:
             db_session = next(get_db_session())
             count = db_session.query(Document).filter(
@@ -197,6 +230,12 @@ class RAGService:
         except Exception as e:
             logger.error(f"Ошибка подсчета документов: {e}")
             return 0
+        finally:
+            if db_session:
+                try:
+                    db_session.close()
+                except:
+                    pass
     
     async def search_documents(self, query: str, limit: int = 10) -> Dict[str, Any]:
         """
@@ -216,7 +255,7 @@ class RAGService:
             loop = asyncio.get_event_loop()
             chunks = await loop.run_in_executor(
                 None,
-                self.rag_system.search_relevant_chunks,
+                self._search_documents_sync,
                 query,
                 limit
             )
@@ -246,6 +285,26 @@ class RAGService:
                 'error': str(e)
             }
     
+    def _search_documents_sync(self, query: str, limit: int = 10) -> list:
+        """Синхронный поиск документов с правильным управлением сессией"""
+        db_session = None
+        try:
+            db_session = next(get_db_session())
+            rag_system = SimpleRAG(db_session, self.gigachat_api_key)
+            
+            chunks = rag_system.search_relevant_chunks(query, limit)
+            return chunks
+            
+        except Exception as e:
+            logger.error(f"Ошибка в синхронном поиске документов: {e}")
+            return []
+        finally:
+            if db_session:
+                try:
+                    db_session.close()
+                except:
+                    pass
+    
     async def _get_document_info(self, document_id: int) -> Optional[Dict[str, Any]]:
         """Получение информации о документе"""
         try:
@@ -262,6 +321,7 @@ class RAGService:
     
     def _get_document_info_sync(self, document_id: int) -> Optional[Dict[str, Any]]:
         """Синхронное получение информации о документе"""
+        db_session = None
         try:
             db_session = next(get_db_session())
             document = db_session.query(Document).filter(
@@ -279,6 +339,12 @@ class RAGService:
         except Exception as e:
             logger.error(f"Ошибка получения документа {document_id}: {e}")
             return None
+        finally:
+            if db_session:
+                try:
+                    db_session.close()
+                except:
+                    pass
 
     async def get_faq_by_category(self, category: str) -> Dict[str, Any]:
         """
@@ -314,9 +380,14 @@ class RAGService:
     
     def _get_faq_by_category_sync(self, category: str) -> Dict[str, Any]:
         """Синхронное получение FAQ по категории"""
+        db_session = None
         try:
-            if hasattr(self.rag_system, 'get_faq_by_category'):
-                return self.rag_system.get_faq_by_category(category)
+            # Создаем новую сессию
+            db_session = next(get_db_session())
+            rag_system = SimpleRAG(db_session, self.gigachat_api_key)
+            
+            if hasattr(rag_system, 'get_faq_by_category'):
+                return rag_system.get_faq_by_category(category)
             else:
                 # Fallback - используем поиск по ключевым словам
                 category_keywords = {
@@ -330,7 +401,7 @@ class RAGService:
                 }
                 
                 keyword = category_keywords.get(category, category)
-                result = self.rag_system.answer_question(f"FAQ {keyword}")
+                result = rag_system.answer_question(f"FAQ {keyword}")
                 
                 if result.get('success'):
                     # Парсим ответ как FAQ
@@ -357,6 +428,12 @@ class RAGService:
                 'questions': [],
                 'error': str(e)
             }
+        finally:
+            if db_session:
+                try:
+                    db_session.close()
+                except:
+                    pass
 
     async def search_relevant_chunks(self, query: str, limit: int = 10) -> list:
         """
@@ -376,7 +453,7 @@ class RAGService:
             loop = asyncio.get_event_loop()
             chunks = await loop.run_in_executor(
                 None,
-                self.rag_system.search_relevant_chunks,
+                self._search_relevant_chunks_sync,
                 query,
                 limit
             )
@@ -398,4 +475,24 @@ class RAGService:
             
         except Exception as e:
             logger.error(f"Ошибка поиска релевантных чанков: {e}")
-            return [] 
+            return []
+    
+    def _search_relevant_chunks_sync(self, query: str, limit: int = 10) -> list:
+        """Синхронный поиск релевантных чанков с правильным управлением сессией"""
+        db_session = None
+        try:
+            db_session = next(get_db_session())
+            rag_system = SimpleRAG(db_session, self.gigachat_api_key)
+            
+            chunks = rag_system.search_relevant_chunks(query, limit)
+            return chunks
+            
+        except Exception as e:
+            logger.error(f"Ошибка в синхронном поиске чанков: {e}")
+            return []
+        finally:
+            if db_session:
+                try:
+                    db_session.close()
+                except:
+                    pass 

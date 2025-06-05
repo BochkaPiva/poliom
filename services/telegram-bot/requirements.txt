@@ -5,11 +5,22 @@ python-dotenv==1.0.0
 # HTTP and API clients
 httpx==0.25.2
 aiohttp==3.9.1
+requests==2.31.0
 
 # Database
 asyncpg==0.29.0
+psycopg2-binary==2.9.9
 sqlalchemy==2.0.23
 alembic==1.13.1
+
+# Authentication
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Document processing
+python-docx==0.8.11
+PyPDF2==3.0.1
+python-magic==0.4.27
 
 # Search and embeddings
 sentence-transformers==4.1.0

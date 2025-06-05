@@ -124,8 +124,8 @@ services:
   # Telegram бот
   telegram-bot:
     build:
-      context: ./services/telegram-bot
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/telegram-bot/Dockerfile
     container_name: rag_telegram_bot
     restart: unless-stopped  # Автоматический перезапуск
     depends_on:
@@ -136,20 +136,23 @@ services:
       celery-worker:
         condition: service_healthy
     environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
-      - POSTGRES_DB=rag_db
-      - POSTGRES_USER=rag_user
-      - POSTGRES_PASSWORD=rag_password
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - REDIS_URL=redis://redis:6379/0
       - GIGACHAT_API_KEY=${GIGACHAT_API_KEY}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - PYTHONPATH=/app:/app/shared
     volumes:
       - ./services/shared:/app/shared:ro
-      - ./uploads:/app/uploads:rw
+      - document_uploads:/app/uploads
     ports:
       - "8080"
+    networks:
+      - rag_network
     healthcheck:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8080/health', timeout=5)"]
       interval: 30s

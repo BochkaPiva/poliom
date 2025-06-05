@@ -63,6 +63,10 @@ class SimpleRAG:
             self.logger.error(f"Ошибка создания эмбеддинга: {e}")
             return []
     
+    def _format_embedding_for_pgvector(self, embedding: List[float]) -> str:
+        """Форматирование эмбеддинга для использования с pgvector"""
+        return str(embedding).replace(' ', '')
+    
     def search_relevant_chunks(self, question: str, limit: int = 15) -> List[Dict]:
         """
         Поиск релевантных чанков для ответа на вопрос
@@ -89,19 +93,19 @@ class SimpleRAG:
                 # Ищем чанки с конкретными датами выплат
                 salary_query = text("""
                     SELECT dc.id, dc.document_id, dc.chunk_index, dc.content,
-                           1 - (dc.embedding <=> :embedding) as similarity,
+                           1 - (dc.embedding_vector <=> :embedding) as similarity,
                            dc.content_length
                     FROM document_chunks dc
                     JOIN documents d ON dc.document_id = d.id
                     WHERE d.processing_status = 'completed'
-                      AND dc.embedding IS NOT NULL
+                      AND dc.embedding_vector IS NOT NULL
                       AND (dc.content ILIKE '%12%' AND dc.content ILIKE '%27%' AND dc.content ILIKE '%выплачивается%')
-                    ORDER BY dc.embedding <=> :embedding
+                    ORDER BY dc.embedding_vector <=> :embedding
                     LIMIT 3
                 """)
                 
                 salary_result = self.db_session.execute(salary_query, {
-                    'embedding': str(question_embedding)
+                    'embedding': self._format_embedding_for_pgvector(question_embedding)
                 })
                 
                 salary_chunks = []
@@ -126,12 +130,12 @@ class SimpleRAG:
             # Используем pgvector для поиска похожих эмбеддингов
             query = text("""
                 SELECT dc.id, dc.document_id, dc.chunk_index, dc.content,
-                       1 - (dc.embedding <=> :embedding) as similarity,
+                       1 - (dc.embedding_vector <=> :embedding) as similarity,
                        dc.content_length
                 FROM document_chunks dc
                 JOIN documents d ON dc.document_id = d.id
                 WHERE d.processing_status = 'completed'
-                  AND dc.embedding IS NOT NULL
+                  AND dc.embedding_vector IS NOT NULL
                   AND dc.content_length > 100
                   AND dc.content_length < 4000
                   AND dc.content NOT ILIKE '%приложение%'
@@ -140,12 +144,12 @@ class SimpleRAG:
                   AND dc.content NOT ILIKE '%система менеджмента%'
                   AND dc.content NOT ILIKE '%введено впервые%'
                   AND dc.content NOT ILIKE '%дата введения%'
-                ORDER BY dc.embedding <=> :embedding
+                ORDER BY dc.embedding_vector <=> :embedding
                 LIMIT :limit
             """)
             
             result = self.db_session.execute(query, {
-                'embedding': str(question_embedding),
+                'embedding': self._format_embedding_for_pgvector(question_embedding),
                 'limit': limit * 2
             })
             
