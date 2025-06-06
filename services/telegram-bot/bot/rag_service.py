@@ -126,6 +126,23 @@ class RAGService:
             rag_system = SimpleRAG(db_session, self.gigachat_api_key)
             
             result = rag_system.answer_question(question, user_id)
+            
+            # ДОПОЛНИТЕЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ ОТСЛЕЖИВАНИЯ FILE_PATH
+            logger.info(f"🔍 RAG СЕРВИС TELEGRAM БОТА - Получен результат от SimpleRAG:")
+            logger.info(f"  - success: {result.get('success', 'НЕТ')}")
+            logger.info(f"  - chunks_found: {result.get('chunks_found', 0)}")
+            
+            files = result.get('files', [])
+            logger.info(f"  - файлов получено: {len(files)}")
+            
+            for i, file_info in enumerate(files):
+                logger.info(f"    📄 Файл {i+1}:")
+                logger.info(f"      - title: '{file_info.get('title', 'БЕЗ_НАЗВАНИЯ')}'")
+                logger.info(f"      - file_path: '{file_info.get('file_path', 'ПУСТОЙ_ПУТЬ')}'")
+                logger.info(f"      - document_id: {file_info.get('document_id', 'НЕТ_ID')}")
+                logger.info(f"      - similarity: {file_info.get('similarity', 'НЕТ_SIMILARITY')}")
+                logger.info(f"      - file_type: '{file_info.get('file_type', 'НЕТ_ТИПА')}'")
+            
             return result
             
         except Exception as e:

@@ -95,7 +95,7 @@ class SearchService:
         try:
             # Получаем все чанки с эмбеддингами
             chunks = session.query(DocumentChunk).join(Document).filter(
-                DocumentChunk.embedding.isnot(None)
+                DocumentChunk.embedding_vector.isnot(None)
             ).all()
             
             if not chunks:
@@ -107,7 +107,7 @@ class SearchService:
             
             for chunk in chunks:
                 try:
-                    chunk_embedding = np.array(chunk.embedding)
+                    chunk_embedding = np.array(chunk.embedding_vector)
                     
                     # Косинусная схожесть
                     similarity = np.dot(query_embedding_np, chunk_embedding) / (

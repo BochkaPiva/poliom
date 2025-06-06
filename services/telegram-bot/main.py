@@ -14,6 +14,7 @@ current_dir = Path(__file__).parent
 project_root = current_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(current_dir))
+sys.path.insert(0, str(current_dir / "shared"))
 
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode

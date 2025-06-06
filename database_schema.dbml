@@ -20,7 +20,7 @@ Project "POLIOM HR Assistant" {
 // ==================================================
 // ТАБЛИЦА: users (Пользователи Telegram)
 // ==================================================
-Table users {
+Table users {ё
   id int [pk, increment, note: 'Первичный ключ']
   telegram_id bigint [unique, not null, note: 'ID пользователя в Telegram']
   username varchar(255) [note: 'Имя пользователя в Telegram']

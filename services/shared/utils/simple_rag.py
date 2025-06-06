@@ -155,8 +155,8 @@ class SimpleRAG:
             
             vector_chunks = []
             for row in result:
-                # Возвращаем нормальный порог схожести
-                if (row.similarity > 0.4 and  # Возвращен с 0.2 до 0.4
+                # Понижаем порог схожести обратно до 0.25
+                if (row.similarity > 0.25 and  # Понижен с 0.4 до 0.25
                     self._is_relevant_content(row.content, question)):
                     vector_chunks.append({
                         'id': row.id,
@@ -600,7 +600,7 @@ class SimpleRAG:
             self.logger.info(f"Обрабатываем вопрос: {question[:100]}...")
             
             # 1. Ищем релевантные документы
-            relevant_chunks = self.search_relevant_chunks(question, limit=20)  # Увеличиваем лимит
+            relevant_chunks = self.search_relevant_chunks(question, limit=15)  # Снижен лимит с 20 до 15
             
             if not relevant_chunks:
                 return {
@@ -668,6 +668,14 @@ class SimpleRAG:
                         'chunk_index': chunk['chunk_index'],
                         'document_id': document.id
                     })
+                    
+                    # ОТЛАДКА: Логируем данные документа
+                    self.logger.info(f"📄 ДОКУМЕНТ ID {document.id}:")
+                    self.logger.info(f"  - title: '{document.title}'")
+                    self.logger.info(f"  - file_path: '{document.file_path}'")
+                    self.logger.info(f"  - original_filename: '{document.original_filename}'")
+                    self.logger.info(f"  - file_type: '{document.file_type}'")
+                    self.logger.info(f"  - file_size: {document.file_size}")
                     
                     # Добавляем полную информацию о файле для прикрепления
                     files.append({

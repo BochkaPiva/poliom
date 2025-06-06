@@ -5,6 +5,7 @@
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
+from pgvector.sqlalchemy import Vector
 from .database import Base
 
 
@@ -30,6 +31,7 @@ class Document(Base):
     
     # Связи
     chunks = relationship("DocumentChunk", back_populates="document", cascade="all, delete-orphan")
+    uploader = relationship("Admin", foreign_keys=[uploaded_by])
     
     def __repr__(self):
         return f"<Document(id={self.id}, filename='{self.filename}', status='{self.processing_status}')>"
@@ -43,7 +45,7 @@ class DocumentChunk(Base):
     chunk_index = Column(Integer, nullable=False, index=True)
     content = Column(Text, nullable=False)
     content_length = Column(Integer, nullable=False, index=True)
-    embedding = Column(Text, nullable=True)  # JSON массив эмбеддинга
+    embedding_vector = Column(Vector(312), nullable=True)  # pgvector эмбеддинг
     chunk_metadata = Column(Text, nullable=True)  # JSON метаданные
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     

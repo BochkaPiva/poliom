@@ -11,11 +11,22 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv('.env')
 
-# Добавляем путь к shared модулям
+# Добавляем пути к модулям
 current_dir = Path(__file__).parent
-shared_path = current_dir.parent / "shared"
-if shared_path.exists():
-    sys.path.insert(0, str(shared_path))
+sys.path.insert(0, str(current_dir))
+sys.path.insert(0, str(current_dir / "shared"))
+
+# Импортируем shared модули
+try:
+    # Пробуем импорт для Docker
+    from shared.utils.auth import get_password_hash, verify_password
+    from shared.models.database import SessionLocal, engine, Base
+    from shared.models import Admin
+except ImportError:
+    # Если не получилось, пробуем локальный импорт
+    from utils.auth import get_password_hash, verify_password
+    from models.database import SessionLocal, engine, Base
+    from models import Admin
 
 # Выводим информацию о подключении
 print(f"🔗 Подключение к БД:")
@@ -24,15 +35,6 @@ print(f"  Port: {os.getenv('POSTGRES_PORT', '5432')}")
 print(f"  Database: {os.getenv('POSTGRES_DB', 'rag_chatbot')}")
 print(f"  User: {os.getenv('POSTGRES_USER', 'postgres')}")
 print(f"  Password: {'*' * len(os.getenv('POSTGRES_PASSWORD', ''))}")
-
-try:
-    from shared.models.database import SessionLocal, engine, Base
-    from shared.models import Admin
-    from shared.utils.auth import get_password_hash, verify_password
-except ImportError:
-    from models.database import SessionLocal, engine, Base
-    from models import Admin
-    from utils.auth import get_password_hash, verify_password
 
 def check_and_create_admin():
     """Проверяем и создаем администратора"""

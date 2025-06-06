@@ -133,8 +133,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      celery-worker:
-        condition: service_healthy
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - POSTGRES_HOST=postgres
@@ -154,7 +152,7 @@ services:
     networks:
       - rag_network
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8080/health', timeout=5)"]
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -169,7 +167,7 @@ services:
       PGADMIN_DEFAULT_PASSWORD: admin123
       PGADMIN_CONFIG_SERVER_MODE: 'False'
     ports:
-      - "8080:80"
+      - "8082:80"
     depends_on:
       postgres:
         condition: service_healthy

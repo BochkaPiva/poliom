@@ -20,6 +20,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Копируем код бота
 COPY services/telegram-bot/ .
 
+# Копируем shared модули
+COPY services/shared/ /app/shared/
+
 # Создаем директории для логов, кэша и моделей
 RUN mkdir -p logs cache models_cache uploads
 

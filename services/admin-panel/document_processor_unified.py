@@ -252,7 +252,7 @@ class DocumentProcessorUnified:
                         chunk_index=i,
                         content=chunk_text,
                         content_length=len(chunk_text),
-                        embedding=embedding,
+                        embedding_vector=embedding,
                         created_at=datetime.utcnow()
                     )
                     

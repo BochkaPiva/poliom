@@ -263,8 +263,11 @@ def format_response_for_telegram(text: str) -> str:
                            'Суммарное базовое вознаграждение\n(с учетом времени отсутствия)')
     
     # 9. Добавляем разделители для лучшей читаемости
-    if '📚 **Источники:**' in text:
-        text = text.replace('📚 **Источники:**', '\n' + '─' * 30 + '\n📚 **Источники:**')
+    # if '📚 **Источники:**' in text:
+    #     text = text.replace('📚 **Источники:**', '\n' + '─' * 30 + '\n📚 **Источники:**')
+    
+    # Убираем лишние пробелы и переносы строк - УДАЛЕНО
+    # text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)
     
     return text.strip()
 
@@ -618,6 +621,9 @@ async def question_handler(message: Message):
             await message.answer("❌ Ваш доступ к боту ограничен. Обратитесь к администратору.")
             return
         
+        # Отправляем временное сообщение о поиске
+        search_message = await message.answer("🔍 **Ищу ответ на ваш вопрос...**", parse_mode='Markdown')
+        
         # Отправляем индикатор "печатает"
         await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
         
@@ -641,7 +647,7 @@ async def question_handler(message: Message):
                     similarity = chunk.get('similarity', 0)
                     logger.info(f"Чанк {i+1}: similarity={similarity}")
                     
-                    if similarity >= 0.25:  # Еще больше снижен порог для отладки
+                    if similarity >= 0.3:  # Повышен порог с 0.25 для оптимизации
                         relevant_chunks.append(chunk)
                         logger.info(f"Чанк {i+1} добавлен как релевантный (similarity={similarity})")
                     else:
@@ -674,18 +680,27 @@ async def question_handler(message: Message):
                         unique_sources = {}
                         for source in result['sources']:
                             title = source.get('title', 'Документ')
-                            if len(title) > 5 and title not in unique_sources:  # Исключаем слишком короткие названия
+                            # Убираем фильтр по длине - все названия допустимы
+                            if title and title not in unique_sources:
                                 unique_sources[title] = source
                         
                         if unique_sources:
-                            response_text += "\n\n" + "─" * 30
-                            response_text += "\n💡 Если ответ не удовлетворил запросу, попробуйте переформулировать его, либо воспользуйтесь источниками для самостоятельного поиска."
+                            # response_text += "\n\n" + "─" * 30
+                            response_text += "\n\n💡 Если ответ не удовлетворил запросу, попробуйте переформулировать его, либо воспользуйтесь источниками для самостоятельного поиска."
                             response_text += "\n\n📚 **Источники:**"
                             for i, title in enumerate(unique_sources.keys(), 1):
                                 response_text += f"\n{i}. {title}"
                             
-                            # Синхронизируем файлы с дедуплицированными источниками
-                            result['files'] = list(unique_sources.values())
+                            # Дедуплицируем файлы по названию, но сохраняем полную информацию включая file_path
+                            unique_files = {}
+                            for file_info in result.get('files', []):
+                                title = file_info.get('title', 'Документ')
+                                # Убираем фильтр по длине и для файлов
+                                if title and title not in unique_files:
+                                    unique_files[title] = file_info
+                            
+                            # Обновляем файлы дедуплицированными, сохраняя file_path
+                            result['files'] = list(unique_files.values())
             else:
                 logger.info("Нет релевантных чанков - возвращаем fallback ответ")
                 if result.get('answer') and not is_blocked_response(result['answer']):
@@ -732,6 +747,14 @@ async def question_handler(message: Message):
                 # Очищаем старые файлы перед добавлением новых
                 cleanup_old_files()
                 
+                # Детальное логирование для отладки
+                logger.info(f"Получено файлов от RAG системы: {len(files)}")
+                for i, file_info in enumerate(files):
+                    logger.info(f"Файл {i+1}: title='{file_info.get('title', 'НЕТ_НАЗВАНИЯ')}', "
+                              f"file_path='{file_info.get('file_path', 'ПУСТОЙ_ПУТЬ')}', "
+                              f"document_id={file_info.get('document_id', 'НЕТ_ID')}, "
+                              f"similarity={file_info.get('similarity', 'НЕТ_SIMILARITY')}")
+                
                 # Сохраняем файлы в временное хранилище с временной меткой
                 files_storage[str(message.message_id)] = {
                     'files': files,
@@ -741,14 +764,14 @@ async def question_handler(message: Message):
             
             # Пытаемся отправить с разными форматами markdown
             try:
-                await message.answer(response_text, reply_markup=back_keyboard, parse_mode='Markdown')
+                await search_message.edit_text(response_text, reply_markup=back_keyboard, parse_mode='Markdown')
             except:
                 try:
                     # Убираем все markdown форматирование
                     clean_text = response_text.replace('**', '').replace('*', '').replace('_', '').replace('`', '')
-                    await message.answer(clean_text, reply_markup=back_keyboard)
+                    await search_message.edit_text(clean_text, reply_markup=back_keyboard)
                 except:
-                    await message.answer("Ответ получен, но возникла ошибка форматирования.", reply_markup=back_keyboard)
+                    await search_message.edit_text("Ответ получен, но возникла ошибка форматирования.", reply_markup=back_keyboard)
         
         except Exception as send_error:
             logger.error(f"Ошибка отправки сообщения: {send_error}")
