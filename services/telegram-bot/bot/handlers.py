@@ -784,16 +784,6 @@ async def question_handler(message: Message):
             except:
                 await message.answer("Техническая ошибка. Попробуйте переформулировать вопрос.")
         
-        # Логируем запрос
-        try:
-            await log_user_query_async(
-                user_id=user.id,
-                query=message.text,
-                    response=response_text[:1000]  # Ограничиваем длину для логирования
-            )
-        except Exception as log_error:
-            logger.error(f"Ошибка логирования: {log_error}")
-        
     except Exception as e:
         logger.error(f"Ошибка в question_handler: {e}")
         try:
